@@ -1,0 +1,20 @@
+{
+    "libpath": "/home/kirill/projects/solana-accountsdb-sqs/target/debug/libsolana_accountsdb_sqs.so",
+    "log": {
+        "level": "info"
+    },
+    "sqs": {
+        "url": "https://sqs.us-east-2.amazonaws.com/225549336985/AccountsQueue",
+        "region": "us-east-2",
+        "auth": {
+            "credentials_file": "/home/kirill/.aws/credentials",
+            "profile": "rpcpool"
+        },
+        "max_requests": 10000
+    },
+    "filters": [{
+        "owner": "MEisE1HzehtrDpAAT8PnLHjpSSkRYakotTuJRPjTpo8"
+    }, {
+        "owner": "Vote111111111111111111111111111111111111111"
+    }]
+}
