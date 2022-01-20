@@ -60,6 +60,8 @@ pub enum ConfigAwsAuth {
 pub struct ConfigAccountsFilter {
     #[serde(deserialize_with = "deserialize_optional_pubkey")]
     pub owner: Option<Pubkey>,
+    #[serde(rename = "camelCase")]
+    pub data_size: Option<usize>,
 }
 
 fn deserialize_region<'de, D>(deserializer: D) -> Result<Region, D::Error>

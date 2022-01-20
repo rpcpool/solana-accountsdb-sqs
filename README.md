@@ -18,6 +18,11 @@ $ solana-validator --accountsdb-plugin-config ./config.json
 
 ### AWS Credentials
 
+**Required permissions:**
+
+- `sqs:Write`
+- `sqs:GetAttribute`
+
 Currently two types of authentication are supported: `Static` and `File`.
 
 `Static` config:
@@ -50,10 +55,24 @@ Currently two types of authentication are supported: `Static` and `File`.
 
 ### Account filters
 
-Only one filter type is supported right now:
+Accounts can be filtered by:
+
+- `owner` — account owner Pubkey
+- `dataSize` — account data size
+
+Filter accounts with `owner` Vote111111111111111111111111111111111111111` and size 128:
 
 ```json
 {
-    "owner": "Vote111111111111111111111111111111111111111"
+    "owner": "Vote111111111111111111111111111111111111111",
+    "dataSize": 128
+}
+```
+
+Filter accounts with size 256:
+
+```json
+{
+    "dataSize": 256
 }
 ```

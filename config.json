@@ -15,6 +15,7 @@
     "filters": [{
         "owner": "MEisE1HzehtrDpAAT8PnLHjpSSkRYakotTuJRPjTpo8"
     }, {
-        "owner": "Vote111111111111111111111111111111111111111"
+        "owner": "Vote111111111111111111111111111111111111111",
+        "dataSize": 100
     }]
 }
