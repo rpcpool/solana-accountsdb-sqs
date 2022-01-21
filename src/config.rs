@@ -10,7 +10,9 @@ use {
 };
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
+    pub libpath: String,
     pub log: ConfigLog,
     pub sqs: ConfigAwsSqs,
     pub filters: Vec<ConfigAccountsFilter>,
@@ -30,13 +32,14 @@ impl Config {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConfigLog {
     pub level: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConfigAwsSqs {
-    #[serde(deserialize_with = "deseralize_commitment_level")]
     pub commitment_level: SlotStatus,
     pub url: String,
     #[serde(deserialize_with = "deserialize_region")]
@@ -44,22 +47,6 @@ pub struct ConfigAwsSqs {
     pub auth: ConfigAwsAuth,
     #[serde(deserialize_with = "deserialize_max_requests")]
     pub max_requests: u64,
-}
-
-fn deseralize_commitment_level<'de, D>(deserializer: D) -> Result<SlotStatus, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value: &str = Deserialize::deserialize(deserializer)?;
-    match value {
-        "processed" => Ok(SlotStatus::Processed),
-        "confirmed" => Ok(SlotStatus::Confirmed),
-        "finalized" => Ok(SlotStatus::Finalized),
-        value => Err(de::Error::custom(format!(
-            "unknown commitment level: {}",
-            value
-        ))),
-    }
 }
 
 fn deserialize_region<'de, D>(deserializer: D) -> Result<Region, D::Error>
@@ -81,7 +68,7 @@ where
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
+#[serde(deny_unknown_fields, untagged)]
 pub enum ConfigAwsAuth {
     Static {
         access_key_id: String,
@@ -105,6 +92,7 @@ impl<'de> Deserialize<'de> for ConfigAccountsFilter {
         D: Deserializer<'de>,
     {
         #[derive(Debug, Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct ConfigAccountsFilterRaw {
             owner: Option<String>,
             data_size: Option<usize>,
