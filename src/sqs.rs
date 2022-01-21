@@ -12,9 +12,12 @@ use {
         GetQueueAttributesError, GetQueueAttributesRequest, SendMessageBatchError,
         SendMessageBatchRequest, SendMessageBatchRequestEntry, Sqs, SqsClient as RusotoSqsClient,
     },
-    solana_accountsdb_plugin_interface::accountsdb_plugin_interface::ReplicaAccountInfoVersions,
+    solana_accountsdb_plugin_interface::accountsdb_plugin_interface::{
+        ReplicaAccountInfoVersions, SlotStatus as AccountsDbSlotStatus,
+    },
     solana_sdk::pubkey::Pubkey,
     std::{
+        collections::{BTreeMap, LinkedList},
         sync::{
             atomic::{AtomicU64, Ordering},
             Arc,
@@ -71,6 +74,30 @@ impl<'a> From<(ReplicaAccountInfoVersions<'a>, u64)> for ReplicaAccountInfo {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SlotStatus {
+    Processed,
+    Confirmed,
+    Finalized,
+}
+
+impl From<AccountsDbSlotStatus> for SlotStatus {
+    fn from(status: AccountsDbSlotStatus) -> Self {
+        match status {
+            AccountsDbSlotStatus::Processed => Self::Processed,
+            AccountsDbSlotStatus::Confirmed => Self::Confirmed,
+            AccountsDbSlotStatus::Rooted => Self::Finalized,
+        }
+    }
+}
+
+#[derive(Debug)]
+enum Message {
+    UpdateAccount(ReplicaAccountInfo),
+    UpdateSlot((SlotStatus, u64)),
+    Shutdown,
+}
+
 #[derive(Debug, Error)]
 pub enum SqsClientError {
     #[error("failed to create Runtime: {0}")]
@@ -94,7 +121,7 @@ pub type SqsClientResult<T = ()> = Result<T, SqsClientError>;
 #[derive(Debug)]
 pub struct AwsSqsClient {
     runtime: Runtime,
-    send_queue: mpsc::UnboundedSender<Option<ReplicaAccountInfo>>,
+    send_queue: mpsc::UnboundedSender<Message>,
     send_jobs: Arc<AtomicU64>,
 }
 
@@ -105,6 +132,7 @@ impl AwsSqsClient {
         let runtime = Runtime::new().map_err(SqsClientError::RuntimeCreate)?;
         let send_queue = runtime.block_on(async move {
             let max_requests = config.max_requests;
+            let commitment_level = config.commitment_level;
             let (client, queue_url) = Self::create_sqs(config)?;
             client
                 .get_queue_attributes(GetQueueAttributesRequest {
@@ -115,8 +143,15 @@ impl AwsSqsClient {
 
             let (tx, rx) = mpsc::unbounded_channel();
             tokio::spawn(async move {
-                if let Err(error) =
-                    Self::send_loop(client, queue_url, max_requests, rx, send_jobs_loop).await
+                if let Err(error) = Self::send_loop(
+                    client,
+                    queue_url,
+                    max_requests,
+                    commitment_level,
+                    rx,
+                    send_jobs_loop,
+                )
+                .await
                 {
                     error!("update_loop failed: {:?}", error);
                 }
@@ -139,14 +174,14 @@ impl AwsSqsClient {
         Ok((sqs, config.url))
     }
 
-    fn send_message(&self, message: Option<ReplicaAccountInfo>) -> SqsClientResult {
+    fn send_message(&self, message: Message) -> SqsClientResult {
         self.send_queue
             .send(message)
             .map_err(|_| SqsClientError::UpdateQueueChannelClosed)
     }
 
     pub fn shutdown(self) {
-        if let Ok(()) = self.send_message(None) {
+        if let Ok(()) = self.send_message(Message::Shutdown) {
             while self.send_jobs.load(Ordering::Relaxed) > 0 {
                 sleep(Duration::from_micros(10));
             }
@@ -156,14 +191,19 @@ impl AwsSqsClient {
     }
 
     pub fn update_account(&self, account: ReplicaAccountInfo) -> SqsClientResult {
-        self.send_message(Some(account))
+        self.send_message(Message::UpdateAccount(account))
+    }
+
+    pub fn update_slot(&self, status: SlotStatus, slot: u64) -> SqsClientResult {
+        self.send_message(Message::UpdateSlot((status, slot)))
     }
 
     async fn send_loop(
         client: RusotoSqsClient,
         queue_url: String,
         max_requests: u64,
-        mut rx: mpsc::UnboundedReceiver<Option<ReplicaAccountInfo>>,
+        commitment_level: SlotStatus,
+        mut rx: mpsc::UnboundedReceiver<Message>,
         send_jobs: Arc<AtomicU64>,
     ) -> SqsClientResult {
         // spawn stats
@@ -219,33 +259,71 @@ impl AwsSqsClient {
             }
         });
 
-        let mut shutdown = false;
-        'outer: while !shutdown {
+        let mut current_slot = 0;
+        let mut accounts = BTreeMap::new();
+        fn fetch_accounts(
+            current_slot: u64,
+            accounts: &mut BTreeMap<u64, LinkedList<ReplicaAccountInfo>>,
+            messages: &mut Vec<ReplicaAccountInfo>,
+        ) {
+            while messages.len() < messages.capacity() {
+                let slot = match accounts.keys().next().copied() {
+                    Some(slot) if slot <= current_slot => slot,
+                    _ => break,
+                };
+                let mut list = accounts.remove(&slot).unwrap();
+                while messages.len() < messages.capacity() {
+                    match list.pop_front() {
+                        Some(message) => messages.push(message),
+                        None => break,
+                    };
+                }
+                if !list.is_empty() {
+                    accounts.insert(slot, list);
+                }
+            }
+        }
+
+        let mut is_alive = true;
+        while is_alive || !accounts.is_empty() {
             while send_jobs.load(Ordering::Relaxed) >= max_requests {
                 // `tokio::time::sleep(Duration::from_nanos(100)).await` or some signal?
                 tokio::task::yield_now().await;
             }
 
             let mut messages = Vec::with_capacity(10);
+            fetch_accounts(current_slot, &mut accounts, &mut messages);
             while messages.len() < messages.capacity() {
                 // Wait first message in the queue and fetch all available but not more than max
-                let message = if messages.is_empty() {
-                    match rx.recv().await {
-                        Some(Some(message)) => message,
-                        Some(None) | None => break 'outer,
-                    }
+                let maybe_message = if messages.is_empty() {
+                    rx.recv().await
                 } else {
                     match rx.try_recv() {
-                        Ok(Some(message)) => message,
-                        Ok(None) | Err(mpsc::error::TryRecvError::Disconnected) => {
-                            shutdown = true;
-                            break;
-                        }
+                        Ok(message) => Some(message),
+                        Err(mpsc::error::TryRecvError::Disconnected) => None,
                         Err(mpsc::error::TryRecvError::Empty) => break,
                     }
                 };
-                messages.push(message);
+                match maybe_message {
+                    Some(Message::UpdateAccount(account)) => {
+                        if current_slot >= account.slot {
+                            messages.push(account);
+                        } else {
+                            accounts.entry(account.slot).or_default().push_back(account);
+                        }
+                    }
+                    Some(Message::UpdateSlot((status, slot))) => {
+                        if status == commitment_level {
+                            current_slot = slot;
+                        }
+                    }
+                    Some(Message::Shutdown) | None => {
+                        is_alive = false;
+                        break;
+                    }
+                }
             }
+            fetch_accounts(current_slot, &mut accounts, &mut messages);
 
             let _ = stats_queued_tx.send(());
             let client = client.clone();
@@ -270,9 +348,9 @@ impl AwsSqsClient {
     async fn send_messages(
         client: RusotoSqsClient,
         queue_url: String,
-        messages: Vec<ReplicaAccountInfo>,
+        accounts: Vec<ReplicaAccountInfo>,
     ) -> SqsClientResult {
-        let entries = messages
+        let entries = accounts
             .iter()
             .enumerate()
             .map(|(id, message)| SendMessageBatchRequestEntry {
@@ -296,15 +374,15 @@ impl AwsSqsClient {
                         .into_iter()
                         .map(|entry| {
                             let index = entry.id.parse::<usize>().ok();
-                            let message = index.and_then(|index| messages.get(index)).unwrap();
+                            let account = index.and_then(|index| accounts.get(index)).unwrap();
 
                             serde_json::json!({
                                 "code": entry.code,
                                 "message": entry.message,
                                 "sender_fault": entry.sender_fault,
-                                "pubkey": message.pubkey.to_string(),
-                                "slot": message.slot,
-                                "write_version": message.write_version,
+                                "pubkey": account.pubkey.to_string(),
+                                "slot": account.slot,
+                                "write_version": account.write_version,
                             })
                         })
                         .collect::<Vec<_>>(),

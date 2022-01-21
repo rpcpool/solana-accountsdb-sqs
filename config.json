@@ -4,6 +4,7 @@
         "level": "info"
     },
     "sqs": {
+        "commitment_level": "finalized",
         "url": "https://sqs.us-east-2.amazonaws.com/225549336985/AccountsQueue",
         "region": "us-east-2",
         "auth": {
@@ -16,6 +17,6 @@
         "owner": "MEisE1HzehtrDpAAT8PnLHjpSSkRYakotTuJRPjTpo8"
     }, {
         "owner": "Vote111111111111111111111111111111111111111",
-        "dataSize": 100
+        "data_size": 100
     }]
 }

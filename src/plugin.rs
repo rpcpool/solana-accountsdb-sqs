@@ -20,7 +20,7 @@ impl Plugin {
 
 impl AccountsDbPlugin for Plugin {
     fn name(&self) -> &'static str {
-        "AccountsDbPluginTokens"
+        "AccountsDbPluginSqs"
     }
 
     fn on_load(&mut self, config_file: &str) -> PluginResult<()> {
@@ -68,11 +68,13 @@ impl AccountsDbPlugin for Plugin {
 
     fn update_slot_status(
         &mut self,
-        _slot: u64,
+        slot: u64,
         _parent: Option<u64>,
-        _status: SlotStatus,
+        status: SlotStatus,
     ) -> PluginResult<()> {
-        Ok(())
+        self.get_sqs()
+            .update_slot(status.into(), slot)
+            .map_err(|error| AccountsDbPluginError::Custom(Box::new(error)))
     }
 }
 

@@ -1,4 +1,5 @@
 use {
+    super::sqs::SlotStatus,
     rusoto_core::Region,
     serde::{de, Deserialize, Deserializer},
     solana_accountsdb_plugin_interface::accountsdb_plugin_interface::{
@@ -35,6 +36,8 @@ pub struct ConfigLog {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ConfigAwsSqs {
+    #[serde(deserialize_with = "deseralize_commitment_level")]
+    pub commitment_level: SlotStatus,
     pub url: String,
     #[serde(deserialize_with = "deserialize_region")]
     pub region: Region,
@@ -43,25 +46,20 @@ pub struct ConfigAwsSqs {
     pub max_requests: u64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum ConfigAwsAuth {
-    Static {
-        access_key_id: String,
-        secret_access_key: String,
-    },
-    File {
-        credentials_file: String,
-        profile: Option<String>,
-    },
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ConfigAccountsFilter {
-    #[serde(deserialize_with = "deserialize_optional_pubkey")]
-    pub owner: Option<Pubkey>,
-    #[serde(rename = "camelCase")]
-    pub data_size: Option<usize>,
+fn deseralize_commitment_level<'de, D>(deserializer: D) -> Result<SlotStatus, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: &str = Deserialize::deserialize(deserializer)?;
+    match value {
+        "processed" => Ok(SlotStatus::Processed),
+        "confirmed" => Ok(SlotStatus::Confirmed),
+        "finalized" => Ok(SlotStatus::Finalized),
+        value => Err(de::Error::custom(format!(
+            "unknown commitment level: {}",
+            value
+        ))),
+    }
 }
 
 fn deserialize_region<'de, D>(deserializer: D) -> Result<Region, D::Error>
@@ -82,12 +80,49 @@ where
     })
 }
 
-fn deserialize_optional_pubkey<'de, D>(deserializer: D) -> Result<Option<Pubkey>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Ok(match Option::<&str>::deserialize(deserializer)? {
-        Some(value) => Some(value.parse().map_err(de::Error::custom)?),
-        None => None,
-    })
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum ConfigAwsAuth {
+    Static {
+        access_key_id: String,
+        secret_access_key: String,
+    },
+    File {
+        credentials_file: String,
+        profile: Option<String>,
+    },
+}
+
+#[derive(Debug)]
+pub struct ConfigAccountsFilter {
+    pub owner: Option<Pubkey>,
+    pub data_size: Option<usize>,
+}
+
+impl<'de> Deserialize<'de> for ConfigAccountsFilter {
+    fn deserialize<D>(deserializer: D) -> Result<ConfigAccountsFilter, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Debug, Deserialize)]
+        struct ConfigAccountsFilterRaw {
+            owner: Option<String>,
+            data_size: Option<usize>,
+        }
+
+        let data = ConfigAccountsFilterRaw::deserialize(deserializer)?;
+        if data.owner.is_none() && data.data_size.is_none() {
+            Err(de::Error::custom(
+                "At least one field in filter should be defined",
+            ))
+        } else {
+            Ok(ConfigAccountsFilter {
+                owner: match data.owner {
+                    Some(value) => Some(value.parse().map_err(de::Error::custom)?),
+                    None => None,
+                },
+                data_size: data.data_size,
+            })
+        }
+    }
 }
