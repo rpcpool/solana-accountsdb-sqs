@@ -31,7 +31,7 @@ impl AccountsDbPlugin for Plugin {
         solana_logger::setup_with_default(log_level);
 
         // Accounts filter
-        self.filter = AccountsFilter::new(&config.filters);
+        self.filter = AccountsFilter::new(config.filters);
 
         // Sqs client
         self.sqs = Some(
