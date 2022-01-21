@@ -12,6 +12,8 @@ use {
         GetQueueAttributesError, GetQueueAttributesRequest, SendMessageBatchError,
         SendMessageBatchRequest, SendMessageBatchRequestEntry, Sqs, SqsClient as RusotoSqsClient,
     },
+    serde::{Deserialize, Serialize},
+    serde_json::json,
     solana_accountsdb_plugin_interface::accountsdb_plugin_interface::{
         ReplicaAccountInfoVersions, SlotStatus as AccountsDbSlotStatus,
     },
@@ -41,22 +43,6 @@ pub struct ReplicaAccountInfo {
     pub slot: u64,
 }
 
-impl ReplicaAccountInfo {
-    pub fn serialize(&self) -> String {
-        serde_json::json!({
-            "pubkey": self.pubkey.to_string(),
-            "lamports": self.lamports,
-            "owner": self.owner.to_string(),
-            "executable": self.executable,
-            "rent_epoch": self.rent_epoch,
-            "data": base64::encode(&self.data),
-            "write_version": self.write_version,
-            "slot": self.slot,
-        })
-        .to_string()
-    }
-}
-
 impl<'a> From<(ReplicaAccountInfoVersions<'a>, u64)> for ReplicaAccountInfo {
     fn from((account, slot): (ReplicaAccountInfoVersions<'a>, u64)) -> Self {
         match account {
@@ -74,7 +60,7 @@ impl<'a> From<(ReplicaAccountInfoVersions<'a>, u64)> for ReplicaAccountInfo {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SlotStatus {
     Processed,
@@ -261,18 +247,18 @@ impl AwsSqsClient {
         });
 
         let mut current_slot = 0;
-        let mut accounts = BTreeMap::new();
-        fn fetch_accounts(
+        let mut slots_messages = BTreeMap::new();
+        fn fetch_slots_messages(
             current_slot: u64,
-            accounts: &mut BTreeMap<u64, LinkedList<ReplicaAccountInfo>>,
-            messages: &mut Vec<ReplicaAccountInfo>,
+            slots_messages: &mut BTreeMap<u64, LinkedList<Message>>,
+            messages: &mut Vec<Message>,
         ) {
             while messages.len() < messages.capacity() {
-                let slot = match accounts.keys().next().copied() {
+                let slot = match slots_messages.keys().next().copied() {
                     Some(slot) if slot <= current_slot => slot,
                     _ => break,
                 };
-                let mut list = accounts.remove(&slot).unwrap();
+                let mut list = slots_messages.remove(&slot).unwrap();
                 while messages.len() < messages.capacity() {
                     match list.pop_front() {
                         Some(message) => messages.push(message),
@@ -280,20 +266,20 @@ impl AwsSqsClient {
                     };
                 }
                 if !list.is_empty() {
-                    accounts.insert(slot, list);
+                    slots_messages.insert(slot, list);
                 }
             }
         }
 
         let mut is_alive = true;
-        while is_alive || !accounts.is_empty() {
+        while is_alive || !slots_messages.is_empty() {
             while send_jobs.load(Ordering::Relaxed) >= max_requests {
                 // `tokio::time::sleep(Duration::from_nanos(100)).await` or some signal?
                 tokio::task::yield_now().await;
             }
 
             let mut messages = Vec::with_capacity(10);
-            fetch_accounts(current_slot, &mut accounts, &mut messages);
+            fetch_slots_messages(current_slot, &mut slots_messages, &mut messages);
             while messages.len() < messages.capacity() {
                 // Wait first message in the queue and fetch all available but not more than max
                 let maybe_message = if messages.is_empty() {
@@ -308,15 +294,19 @@ impl AwsSqsClient {
                 match maybe_message {
                     Some(Message::UpdateAccount(account)) => {
                         if current_slot >= account.slot {
-                            messages.push(account);
+                            messages.push(Message::UpdateAccount(account));
                         } else {
-                            accounts.entry(account.slot).or_default().push_back(account);
+                            slots_messages
+                                .entry(account.slot)
+                                .or_default()
+                                .push_back(Message::UpdateAccount(account));
                         }
                     }
                     Some(Message::UpdateSlot((status, slot))) => {
                         if status == commitment_level {
                             current_slot = slot;
                         }
+                        messages.push(Message::UpdateSlot((status, slot)));
                     }
                     Some(Message::Shutdown) | None => {
                         is_alive = false;
@@ -324,7 +314,7 @@ impl AwsSqsClient {
                     }
                 }
             }
-            fetch_accounts(current_slot, &mut accounts, &mut messages);
+            fetch_slots_messages(current_slot, &mut slots_messages, &mut messages);
 
             let _ = stats_queued_tx.send(());
             let client = client.clone();
@@ -349,14 +339,33 @@ impl AwsSqsClient {
     async fn send_messages(
         client: RusotoSqsClient,
         queue_url: String,
-        accounts: Vec<ReplicaAccountInfo>,
+        messages: Vec<Message>,
     ) -> SqsClientResult {
-        let entries = accounts
+        let entries = messages
             .iter()
             .enumerate()
             .map(|(id, message)| SendMessageBatchRequestEntry {
                 id: id.to_string(),
-                message_body: message.serialize(),
+                message_body: match message {
+                    Message::UpdateAccount(account) => json!({
+                        "type": "account",
+                        "pubkey": account.pubkey.to_string(),
+                        "lamports": account.lamports,
+                        "owner": account.owner.to_string(),
+                        "executable": account.executable,
+                        "rent_epoch": account.rent_epoch,
+                        "data": base64::encode(&account.data),
+                        "write_version": account.write_version,
+                        "slot": account.slot,
+                    }),
+                    Message::UpdateSlot((status, slot)) => json!({
+                        "type": "slot",
+                        "status": status,
+                        "slot": slot,
+                    }),
+                    Message::Shutdown => unreachable!(),
+                }
+                .to_string(),
                 ..Default::default()
             })
             .collect::<Vec<_>>();
@@ -374,17 +383,27 @@ impl AwsSqsClient {
                     &failed
                         .into_iter()
                         .map(|entry| {
-                            let index = entry.id.parse::<usize>().ok();
-                            let account = index.and_then(|index| accounts.get(index)).unwrap();
-
-                            serde_json::json!({
+                            let mut value = json!({
                                 "code": entry.code,
                                 "message": entry.message,
                                 "sender_fault": entry.sender_fault,
-                                "pubkey": account.pubkey.to_string(),
-                                "slot": account.slot,
-                                "write_version": account.write_version,
-                            })
+                            });
+
+                            let index = entry.id.parse::<usize>().ok();
+                            match index.and_then(|index| messages.get(index)).unwrap() {
+                                Message::UpdateAccount(account) => {
+                                    value["pubkey"] = json!(account.pubkey.to_string());
+                                    value["slot"] = json!(account.slot);
+                                    value["write_version"] = json!(account.write_version);
+                                }
+                                Message::UpdateSlot((status, slot)) => {
+                                    value["status"] = json!(status);
+                                    value["slot"] = json!(slot);
+                                }
+                                Message::Shutdown => unreachable!(),
+                            }
+
+                            value
                         })
                         .collect::<Vec<_>>(),
                 )

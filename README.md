@@ -58,14 +58,14 @@ Currently two types of authentication are supported: `Static` and `File`.
 Accounts can be filtered by:
 
 - `owner` — account owner Pubkey
-- `dataSize` — account data size
+- `data_size` — account data size
 
 Filter accounts with `owner` Vote111111111111111111111111111111111111111` and size 128:
 
 ```json
 {
     "owner": "Vote111111111111111111111111111111111111111",
-    "dataSize": 128
+    "data_size": 128
 }
 ```
 
@@ -73,6 +73,6 @@ Filter accounts with size 256:
 
 ```json
 {
-    "dataSize": 256
+    "data_size": 256
 }
 ```
