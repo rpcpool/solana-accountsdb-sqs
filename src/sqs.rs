@@ -189,7 +189,7 @@ impl AwsSqsClient {
         client: RusotoSqsClient,
         queue_url: String,
         max_requests: u64,
-        commitment_level: SlotStatus,
+        commitment_level: Option<SlotStatus>,
         mut rx: mpsc::UnboundedReceiver<Message>,
         send_jobs: Arc<AtomicU64>,
     ) -> SqsClientResult {
@@ -246,7 +246,10 @@ impl AwsSqsClient {
             }
         });
 
-        let mut current_slot = 0;
+        let mut current_slot = match commitment_level {
+            Some(_) => 0,
+            None => u64::MAX,
+        };
         let mut slots_messages = BTreeMap::new();
         fn fetch_slots_messages(
             current_slot: u64,
@@ -303,8 +306,10 @@ impl AwsSqsClient {
                         }
                     }
                     Some(Message::UpdateSlot((status, slot))) => {
-                        if status == commitment_level {
-                            current_slot = slot;
+                        if let Some(commitment_level) = commitment_level {
+                            if status == commitment_level {
+                                current_slot = slot;
+                            }
                         }
                         messages.push(Message::UpdateSlot((status, slot)));
                     }

@@ -40,7 +40,7 @@ pub struct ConfigLog {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigAwsSqs {
-    pub commitment_level: SlotStatus,
+    pub commitment_level: Option<SlotStatus>,
     pub url: String,
     #[serde(deserialize_with = "deserialize_region")]
     pub region: Region,
