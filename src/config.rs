@@ -6,7 +6,11 @@ use {
         AccountsDbPluginError, Result as PluginResult,
     },
     solana_sdk::pubkey::Pubkey,
-    std::{fs::read_to_string, path::Path},
+    std::{
+        collections::{HashMap, HashSet},
+        fs::read_to_string,
+        path::Path,
+    },
 };
 
 #[derive(Debug, Deserialize)]
@@ -15,7 +19,8 @@ pub struct Config {
     pub libpath: String,
     pub log: ConfigLog,
     pub sqs: ConfigAwsSqs,
-    pub filters: Vec<ConfigAccountsFilter>,
+    #[serde(rename = "filters")]
+    pub filter: ConfigAccountsFilter,
 }
 
 impl Config {
@@ -80,10 +85,18 @@ pub enum ConfigAwsAuth {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default, Clone)]
+pub struct ConfigAccountsFilterOwnerValue {
+    pub without_size: bool,
+    pub sizes: HashSet<usize>,
+}
+
+#[derive(Debug, Default, Clone)]
 pub struct ConfigAccountsFilter {
-    pub owner: Option<Pubkey>,
-    pub data_size: Option<usize>,
+    pub owner: HashMap<Pubkey, ConfigAccountsFilterOwnerValue>,
+    pub data_size: HashSet<usize>,
+    pub tokenkeg_owner: HashSet<Pubkey>,
+    pub tokenkeg_delegate: HashSet<Pubkey>,
 }
 
 impl<'de> Deserialize<'de> for ConfigAccountsFilter {
@@ -93,24 +106,64 @@ impl<'de> Deserialize<'de> for ConfigAccountsFilter {
     {
         #[derive(Debug, Deserialize)]
         #[serde(deny_unknown_fields)]
-        struct ConfigAccountsFilterRaw {
-            owner: Option<String>,
+        struct ConfigAccountsFilterRaw<'a> {
+            owner: Option<&'a str>,
             data_size: Option<usize>,
+            tokenkeg_owner: Option<Vec<&'a str>>,
+            tokenkeg_delegate: Option<Vec<&'a str>>,
         }
 
-        let data = ConfigAccountsFilterRaw::deserialize(deserializer)?;
-        if data.owner.is_none() && data.data_size.is_none() {
-            Err(de::Error::custom(
-                "At least one field in filter should be defined",
-            ))
-        } else {
-            Ok(ConfigAccountsFilter {
-                owner: match data.owner {
-                    Some(value) => Some(value.parse().map_err(de::Error::custom)?),
-                    None => None,
-                },
-                data_size: data.data_size,
-            })
+        let mut filter = ConfigAccountsFilter::default();
+        let items: Vec<ConfigAccountsFilterRaw> = Deserialize::deserialize(deserializer)?;
+        for item in items {
+            if item.owner.is_none()
+                && item.data_size.is_none()
+                && item.tokenkeg_owner.is_none()
+                && item.tokenkeg_delegate.is_none()
+            {
+                return Err(de::Error::custom(
+                    "At least one field in filter should be defined",
+                ));
+            }
+            if (item.owner.is_some() || item.data_size.is_some())
+                && (item.tokenkeg_owner.is_some() || item.tokenkeg_delegate.is_some())
+            {
+                return Err(de::Error::custom(
+                    "`tokenkeg_owner` or `tokenkeg_delegate` field is not compatiable with `owner` and `data_size`",
+                ));
+            }
+
+            match (item.owner, item.data_size) {
+                (None, None) => {}
+                (None, Some(data_size)) => {
+                    filter.data_size.insert(data_size);
+                }
+                (Some(owner), None) => {
+                    let pubkey = owner.parse().map_err(de::Error::custom)?;
+                    let entry = filter.owner.entry(pubkey).or_default();
+                    entry.without_size = true;
+                }
+                (Some(owner), Some(data_size)) => {
+                    let pubkey = owner.parse().map_err(de::Error::custom)?;
+                    let entry = filter.owner.entry(pubkey).or_default();
+                    entry.sizes.insert(data_size);
+                }
+            }
+
+            if let Some(pubkeys) = item.tokenkeg_owner {
+                for pubkey in pubkeys {
+                    let pubkey = pubkey.parse().map_err(de::Error::custom)?;
+                    filter.tokenkeg_owner.insert(pubkey);
+                }
+            }
+
+            if let Some(pubkeys) = item.tokenkeg_delegate {
+                for pubkey in pubkeys {
+                    let pubkey = pubkey.parse().map_err(de::Error::custom)?;
+                    filter.tokenkeg_delegate.insert(pubkey);
+                }
+            }
         }
+        Ok(filter)
     }
 }

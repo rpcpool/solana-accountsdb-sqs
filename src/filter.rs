@@ -1,33 +1,46 @@
 use {
-    super::config::ConfigAccountsFilter, arrayref::array_ref,
-    solana_accountsdb_plugin_interface::accountsdb_plugin_interface::ReplicaAccountInfoVersions,
+    super::{config::ConfigAccountsFilter, sqs::ReplicaAccountInfo},
     solana_sdk::pubkey::Pubkey,
+    spl_token::{solana_program::program_pack::Pack, state::Account as SplTokenAccount},
 };
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct AccountsFilter {
-    filters: Vec<ConfigAccountsFilter>,
+    filter: ConfigAccountsFilter,
 }
 
 impl AccountsFilter {
-    pub fn new(filters: Vec<ConfigAccountsFilter>) -> Self {
-        Self { filters }
+    pub fn new(filter: ConfigAccountsFilter) -> Self {
+        Self { filter }
     }
 
-    pub fn contains(&self, account: &ReplicaAccountInfoVersions) -> bool {
-        match account {
-            ReplicaAccountInfoVersions::V0_0_1(account) => {
-                let owner = Pubkey::new_from_array(*array_ref!(account.owner, 0, 32));
-
-                self.filters.iter().any(|filter| {
-                    filter.owner.as_ref().map(|pk| owner == *pk).unwrap_or(true)
-                        && filter
-                            .data_size
-                            .as_ref()
-                            .map(|size| account.data.len() == *size)
-                            .unwrap_or(true)
-                })
-            }
+    pub fn contains(&self, account: &ReplicaAccountInfo) -> bool {
+        // Filter by size only
+        let data_size = account.data.len();
+        if self.filter.data_size.contains(&data_size) {
+            return true;
         }
+
+        // Filter by owner with optional data size
+        if let Some(entry) = self.filter.owner.get(&account.owner) {
+            return entry.without_size || entry.sizes.contains(&data_size);
+        }
+
+        false
+    }
+
+    pub fn contains_tokenkeg(&self, account: &ReplicaAccountInfo) -> bool {
+        // Any Tokenkeg Account
+        account.owner == spl_token::ID
+            && account.data.len() == SplTokenAccount::LEN
+            && (!self.filter.tokenkeg_owner.is_empty() || !self.filter.tokenkeg_delegate.is_empty())
+    }
+
+    pub fn contains_tokenkeg_owner(&self, pubkey: &Pubkey) -> bool {
+        self.filter.tokenkeg_owner.contains(pubkey)
+    }
+
+    pub fn contains_tokenkeg_delegate(&self, pubkey: &Pubkey) -> bool {
+        self.filter.tokenkeg_delegate.contains(pubkey)
     }
 }

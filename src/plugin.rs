@@ -1,5 +1,5 @@
 use {
-    crate::{config::Config, filter::AccountsFilter, sqs::AwsSqsClient},
+    crate::{config::Config, sqs::AwsSqsClient},
     solana_accountsdb_plugin_interface::accountsdb_plugin_interface::{
         AccountsDbPlugin, AccountsDbPluginError, ReplicaAccountInfoVersions,
         Result as PluginResult, SlotStatus,
@@ -8,7 +8,6 @@ use {
 
 #[derive(Debug, Default)]
 pub struct Plugin {
-    filter: AccountsFilter,
     sqs: Option<AwsSqsClient>,
 }
 
@@ -30,12 +29,9 @@ impl AccountsDbPlugin for Plugin {
         let log_level = config.log.level.as_deref().unwrap_or("info");
         solana_logger::setup_with_default(log_level);
 
-        // Accounts filter
-        self.filter = AccountsFilter::new(config.filters);
-
         // Sqs client
         self.sqs = Some(
-            AwsSqsClient::new(config.sqs)
+            AwsSqsClient::new(config)
                 .map_err(|error| AccountsDbPluginError::Custom(Box::new(error)))?,
         );
 
@@ -52,18 +48,17 @@ impl AccountsDbPlugin for Plugin {
         &mut self,
         account: ReplicaAccountInfoVersions,
         slot: u64,
-        is_startup: bool,
+        _is_startup: bool,
     ) -> PluginResult<()> {
-        if !is_startup && self.filter.contains(&account) {
-            self.get_sqs()
-                .update_account((account, slot).into())
-                .map_err(|error| AccountsDbPluginError::Custom(Box::new(error)))?
-        }
-        Ok(())
+        self.get_sqs()
+            .update_account((account, slot).into())
+            .map_err(|error| AccountsDbPluginError::Custom(Box::new(error)))
     }
 
     fn notify_end_of_startup(&mut self) -> PluginResult<()> {
-        Ok(())
+        self.get_sqs()
+            .startup_finished()
+            .map_err(|error| AccountsDbPluginError::Custom(Box::new(error)))
     }
 
     fn update_slot_status(
@@ -73,7 +68,7 @@ impl AccountsDbPlugin for Plugin {
         status: SlotStatus,
     ) -> PluginResult<()> {
         self.get_sqs()
-            .update_slot(status.into(), slot)
+            .update_slot(slot, status)
             .map_err(|error| AccountsDbPluginError::Custom(Box::new(error)))
     }
 }

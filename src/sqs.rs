@@ -1,5 +1,9 @@
 use {
-    super::config::{ConfigAwsAuth, ConfigAwsSqs},
+    super::{
+        config::{Config, ConfigAwsAuth, ConfigAwsSqs},
+        filter::AccountsFilter,
+    },
+    arrayref::array_ref,
     async_trait::async_trait,
     humantime::format_duration,
     log::*,
@@ -18,10 +22,13 @@ use {
         ReplicaAccountInfoVersions, SlotStatus as AccountsDbSlotStatus,
     },
     solana_sdk::pubkey::Pubkey,
+    spl_token::{solana_program::program_pack::Pack, state::Account as SplTokenAccount},
     std::{
-        collections::{BTreeMap, LinkedList},
+        collections::{
+            hash_map::Entry as HashMapEntry, BTreeMap, BTreeSet, HashMap, HashSet, LinkedList,
+        },
         sync::{
-            atomic::{AtomicU64, Ordering},
+            atomic::{AtomicBool, AtomicU64, Ordering},
             Arc,
         },
         thread::sleep,
@@ -31,7 +38,7 @@ use {
     tokio::{runtime::Runtime, sync::mpsc, time::sleep as sleep_async},
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct ReplicaAccountInfo {
     pub pubkey: Pubkey,
     pub lamports: u64,
@@ -41,6 +48,46 @@ pub struct ReplicaAccountInfo {
     pub data: Vec<u8>,
     pub write_version: u64,
     pub slot: u64,
+}
+
+impl ReplicaAccountInfo {
+    pub fn token_owner(&self) -> Option<Pubkey> {
+        if self.owner == spl_token::ID && self.data.len() == SplTokenAccount::LEN {
+            Some(Pubkey::new_from_array(*array_ref!(&self.data, 32, 32)))
+        } else {
+            None
+        }
+    }
+
+    pub fn token_delegate(&self) -> Option<Option<Pubkey>> {
+        if self.owner == spl_token::ID && self.data.len() == SplTokenAccount::LEN {
+            Some(match *array_ref!(&self.data, 72, 4) {
+                [0, 0, 0, 0] => None,
+                [1, 0, 0, 0] => {
+                    let pubkey = Pubkey::new_from_array(*array_ref!(&self.data, 76, 32));
+                    Some(pubkey)
+                }
+                _ => None,
+            })
+        } else {
+            None
+        }
+    }
+}
+
+impl PartialOrd for ReplicaAccountInfo {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ReplicaAccountInfo {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match self.slot.cmp(&other.slot) {
+            std::cmp::Ordering::Equal => self.write_version.cmp(&other.write_version),
+            other => other,
+        }
+    }
 }
 
 impl<'a> From<(ReplicaAccountInfoVersions<'a>, u64)> for ReplicaAccountInfo {
@@ -82,6 +129,7 @@ impl From<AccountsDbSlotStatus> for SlotStatus {
 enum Message {
     UpdateAccount(ReplicaAccountInfo),
     UpdateSlot((SlotStatus, u64)),
+    StartupFinished,
     Shutdown,
 }
 
@@ -108,37 +156,25 @@ pub type SqsClientResult<T = ()> = Result<T, SqsClientError>;
 #[derive(Debug)]
 pub struct AwsSqsClient {
     runtime: Runtime,
+    filter: AccountsFilter,
     send_queue: mpsc::UnboundedSender<Message>,
     send_jobs: Arc<AtomicU64>,
+    startup_job: Arc<AtomicBool>,
 }
 
 impl AwsSqsClient {
-    pub fn new(config: ConfigAwsSqs) -> SqsClientResult<Self> {
+    pub fn new(config: Config) -> SqsClientResult<Self> {
+        let filter = AccountsFilter::new(config.filter.clone());
         let send_jobs = Arc::new(AtomicU64::new(1));
         let send_jobs_loop = Arc::clone(&send_jobs);
+        let startup_job = Arc::new(AtomicBool::new(true));
+        let startup_job_loop = Arc::clone(&startup_job);
         let runtime = Runtime::new().map_err(SqsClientError::RuntimeCreate)?;
         let send_queue = runtime.block_on(async move {
-            let max_requests = config.max_requests;
-            let commitment_level = config.commitment_level;
-            let (client, queue_url) = Self::create_sqs(config)?;
-            client
-                .get_queue_attributes(GetQueueAttributesRequest {
-                    attribute_names: None,
-                    queue_url: queue_url.clone(),
-                })
-                .await?;
-
             let (tx, rx) = mpsc::unbounded_channel();
             tokio::spawn(async move {
-                if let Err(error) = Self::send_loop(
-                    client,
-                    queue_url,
-                    max_requests,
-                    commitment_level,
-                    rx,
-                    send_jobs_loop,
-                )
-                .await
+                if let Err(error) =
+                    Self::send_loop(config, rx, send_jobs_loop, startup_job_loop).await
                 {
                     error!("update_loop failed: {:?}", error);
                 }
@@ -148,8 +184,10 @@ impl AwsSqsClient {
         })?;
         Ok(Self {
             runtime,
+            filter,
             send_queue,
             send_jobs,
+            startup_job,
         })
     }
 
@@ -177,22 +215,82 @@ impl AwsSqsClient {
         self.runtime.shutdown_timeout(Duration::from_secs(10));
     }
 
-    pub fn update_account(&self, account: ReplicaAccountInfo) -> SqsClientResult {
-        self.send_message(Message::UpdateAccount(account))
+    pub fn update_slot(&self, slot: u64, status: AccountsDbSlotStatus) -> SqsClientResult {
+        self.send_message(Message::UpdateSlot((status.into(), slot)))
     }
 
-    pub fn update_slot(&self, status: SlotStatus, slot: u64) -> SqsClientResult {
-        self.send_message(Message::UpdateSlot((status, slot)))
+    pub fn update_account(&self, account: ReplicaAccountInfo) -> SqsClientResult {
+        if self.filter.contains(&account) || self.filter.contains_tokenkeg(&account) {
+            self.send_message(Message::UpdateAccount(account))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn startup_finished(&self) -> SqsClientResult {
+        self.send_message(Message::StartupFinished)?;
+        while self.startup_job.load(Ordering::Relaxed) {
+            sleep(Duration::from_micros(10));
+        }
+        Ok(())
     }
 
     async fn send_loop(
-        client: RusotoSqsClient,
-        queue_url: String,
-        max_requests: u64,
-        commitment_level: Option<SlotStatus>,
+        config: Config,
         mut rx: mpsc::UnboundedReceiver<Message>,
         send_jobs: Arc<AtomicU64>,
+        startup_job: Arc<AtomicBool>,
     ) -> SqsClientResult {
+        let filter = AccountsFilter::new(config.filter);
+        let max_requests = config.sqs.max_requests;
+        let commitment_level = config.sqs.commitment_level;
+        let (client, queue_url) = Self::create_sqs(config.sqs)?;
+
+        // Check that SQS is available
+        client
+            .get_queue_attributes(GetQueueAttributesRequest {
+                attribute_names: None,
+                queue_url: queue_url.clone(),
+            })
+            .await?;
+
+        // Save required Tokenkeg Accounts
+        let mut tokenkeg_owner_accounts: HashMap<Pubkey, BTreeSet<ReplicaAccountInfo>> =
+            HashMap::new();
+        let mut tokenkeg_delegate_accounts: HashMap<Pubkey, BTreeSet<ReplicaAccountInfo>> =
+            HashMap::new();
+        while let Some(message) = rx.recv().await {
+            match message {
+                Message::UpdateAccount(account) => {
+                    if let Some(owner) = account.token_owner() {
+                        if filter.contains_tokenkeg_owner(&owner) {
+                            tokenkeg_owner_accounts
+                                .entry(account.pubkey)
+                                .or_default()
+                                .insert(account.clone());
+                        }
+                    }
+                    if let Some(Some(delegate)) = account.token_delegate() {
+                        if filter.contains_tokenkeg_delegate(&delegate) {
+                            tokenkeg_delegate_accounts
+                                .entry(account.pubkey)
+                                .or_default()
+                                .insert(account);
+                        }
+                    }
+                }
+                Message::UpdateSlot(_) => unreachable!(),
+                Message::StartupFinished => {
+                    startup_job.store(false, Ordering::Relaxed);
+                    break;
+                }
+                Message::Shutdown => {
+                    send_jobs.fetch_sub(1, Ordering::Relaxed);
+                    return Ok(());
+                }
+            }
+        }
+
         // spawn stats
         let send_jobs_stats = Arc::clone(&send_jobs);
         let (stats_queued_tx, mut stats_queued_rx) = mpsc::unbounded_channel();
@@ -250,7 +348,7 @@ impl AwsSqsClient {
             Some(_) => 0,
             None => u64::MAX,
         };
-        let mut slots_messages = BTreeMap::new();
+        let mut slots_messages: BTreeMap<u64, LinkedList<Message>> = BTreeMap::new();
         fn fetch_slots_messages(
             current_slot: u64,
             slots_messages: &mut BTreeMap<u64, LinkedList<Message>>,
@@ -271,6 +369,111 @@ impl AwsSqsClient {
                 if !list.is_empty() {
                     slots_messages.insert(slot, list);
                 }
+            }
+        }
+
+        let mut current_account_slot = 0;
+        let mut tokenkeg_owner_waiting_accounts = Vec::new();
+        let mut tokenkeg_owner_touched_accounts = HashSet::new();
+        let mut tokenkeg_delegate_waiting_accounts = Vec::new();
+        let mut tokenkeg_delegate_touched_accounts = HashSet::new();
+        #[allow(clippy::too_many_arguments)]
+        fn drain_tokenkeg_accounts(
+            filter: &AccountsFilter,
+            tokenkeg_owner_accounts: &mut HashMap<Pubkey, BTreeSet<ReplicaAccountInfo>>,
+            tokenkeg_owner_waiting_accounts: &mut Vec<ReplicaAccountInfo>,
+            tokenkeg_owner_touched_accounts: &mut HashSet<Pubkey>,
+            tokenkeg_delegate_accounts: &mut HashMap<Pubkey, BTreeSet<ReplicaAccountInfo>>,
+            tokenkeg_delegate_waiting_accounts: &mut Vec<ReplicaAccountInfo>,
+            tokenkeg_delegate_touched_accounts: &mut HashSet<Pubkey>,
+            slots_messages: &mut BTreeMap<u64, LinkedList<Message>>,
+        ) {
+            let mut accounts = HashSet::new();
+
+            for account in tokenkeg_owner_waiting_accounts.drain(..) {
+                if let Some(set) = tokenkeg_owner_accounts.get_mut(&account.pubkey) {
+                    tokenkeg_owner_touched_accounts.insert(account.pubkey);
+                    set.insert(account);
+                }
+            }
+            for pubkey in tokenkeg_owner_touched_accounts.drain() {
+                let set = tokenkeg_owner_accounts
+                    .get_mut(&pubkey)
+                    .expect("invalid touched account");
+                if set.len() == 1 {
+                    continue;
+                }
+
+                let mut owner_prev = set.iter().next().unwrap().token_owner().unwrap();
+                for account in set.iter().skip(1) {
+                    let owner = account.token_owner().unwrap();
+                    if owner != owner_prev
+                        && (filter.contains_tokenkeg_owner(&owner)
+                            || filter.contains_tokenkeg_owner(&owner_prev))
+                    {
+                        accounts.insert(account.clone());
+                    }
+                    owner_prev = owner;
+                }
+
+                let last = set.iter().last().unwrap().clone();
+                let last_owner = last.token_owner().expect("token account");
+                if filter.contains_tokenkeg_owner(&last_owner) {
+                    set.clear();
+                    set.insert(last);
+                } else {
+                    tokenkeg_owner_accounts.remove(&pubkey);
+                }
+            }
+
+            for account in tokenkeg_delegate_waiting_accounts.drain(..) {
+                if let Some(set) = tokenkeg_delegate_accounts.get_mut(&account.pubkey) {
+                    tokenkeg_delegate_touched_accounts.insert(account.pubkey);
+                    set.insert(account);
+                }
+            }
+            for pubkey in tokenkeg_delegate_touched_accounts.drain() {
+                let set = tokenkeg_delegate_accounts
+                    .get_mut(&pubkey)
+                    .expect("invalid touched account");
+                if set.len() == 1 {
+                    continue;
+                }
+
+                let mut delegate_prev = set.iter().next().unwrap().token_delegate().unwrap();
+                for account in set.iter().skip(1) {
+                    let delegate = account.token_delegate().unwrap();
+                    if delegate != delegate_prev
+                        && (delegate
+                            .map(|pubkey| filter.contains_tokenkeg_delegate(&pubkey))
+                            .unwrap_or(false)
+                            || delegate_prev
+                                .map(|pubkey| filter.contains_tokenkeg_delegate(&pubkey))
+                                .unwrap_or(false))
+                    {
+                        accounts.insert(account.clone());
+                    }
+                    delegate_prev = delegate;
+                }
+
+                let last = set.iter().last().unwrap().clone();
+                let last_delegate = last.token_delegate().expect("token account");
+                if last_delegate
+                    .map(|pubkey| filter.contains_tokenkeg_delegate(&pubkey))
+                    .unwrap_or(false)
+                {
+                    set.clear();
+                    set.insert(last);
+                } else {
+                    tokenkeg_owner_accounts.remove(&pubkey);
+                }
+            }
+
+            for account in accounts.into_iter() {
+                slots_messages
+                    .entry(account.slot)
+                    .or_default()
+                    .push_back(Message::UpdateAccount(account));
             }
         }
 
@@ -296,13 +499,62 @@ impl AwsSqsClient {
                 };
                 match maybe_message {
                     Some(Message::UpdateAccount(account)) => {
-                        if current_slot >= account.slot {
-                            messages.push(Message::UpdateAccount(account));
-                        } else {
-                            slots_messages
-                                .entry(account.slot)
-                                .or_default()
-                                .push_back(Message::UpdateAccount(account));
+                        if account.slot != current_account_slot {
+                            drain_tokenkeg_accounts(
+                                &filter,
+                                &mut tokenkeg_owner_accounts,
+                                &mut tokenkeg_owner_waiting_accounts,
+                                &mut tokenkeg_owner_touched_accounts,
+                                &mut tokenkeg_delegate_accounts,
+                                &mut tokenkeg_delegate_waiting_accounts,
+                                &mut tokenkeg_delegate_touched_accounts,
+                                &mut slots_messages,
+                            );
+                            current_account_slot = account.slot;
+                        }
+
+                        if filter.contains(&account) {
+                            if current_slot >= account.slot {
+                                messages.push(Message::UpdateAccount(account));
+                            } else {
+                                slots_messages
+                                    .entry(account.slot)
+                                    .or_default()
+                                    .push_back(Message::UpdateAccount(account));
+                            }
+                        } else if filter.contains_tokenkeg(&account) {
+                            let owner = account.token_owner().expect("bad filter");
+                            if filter.contains_tokenkeg_owner(&owner) {
+                                tokenkeg_owner_touched_accounts.insert(account.pubkey);
+                                let set = tokenkeg_owner_accounts.entry(account.pubkey);
+                                if let HashMapEntry::Vacant(_) = set {
+                                    slots_messages
+                                        .entry(account.slot)
+                                        .or_default()
+                                        .push_back(Message::UpdateAccount(account.clone()));
+                                }
+                                set.or_default().insert(account.clone());
+                            } else {
+                                tokenkeg_owner_waiting_accounts.push(account.clone());
+                            }
+
+                            if let Some(delegate) = account.token_delegate().expect("bad filter") {
+                                if filter.contains_tokenkeg_delegate(&delegate) {
+                                    tokenkeg_delegate_touched_accounts.insert(account.pubkey);
+                                    let set = tokenkeg_delegate_accounts.entry(account.pubkey);
+                                    if let HashMapEntry::Vacant(_) = set {
+                                        slots_messages
+                                            .entry(account.slot)
+                                            .or_default()
+                                            .push_back(Message::UpdateAccount(account.clone()));
+                                    }
+                                    set.or_default().insert(account);
+                                } else {
+                                    tokenkeg_delegate_waiting_accounts.push(account);
+                                }
+                            } else {
+                                tokenkeg_delegate_waiting_accounts.push(account);
+                            }
                         }
                     }
                     Some(Message::UpdateSlot((status, slot))) => {
@@ -313,6 +565,7 @@ impl AwsSqsClient {
                         }
                         messages.push(Message::UpdateSlot((status, slot)));
                     }
+                    Some(Message::StartupFinished) => unreachable!(),
                     Some(Message::Shutdown) | None => {
                         is_alive = false;
                         break;
@@ -368,6 +621,7 @@ impl AwsSqsClient {
                         "status": status,
                         "slot": slot,
                     }),
+                    Message::StartupFinished => unreachable!(),
                     Message::Shutdown => unreachable!(),
                 }
                 .to_string(),
@@ -405,6 +659,7 @@ impl AwsSqsClient {
                                     value["status"] = json!(status);
                                     value["slot"] = json!(slot);
                                 }
+                                Message::StartupFinished => unreachable!(),
                                 Message::Shutdown => unreachable!(),
                             }
 

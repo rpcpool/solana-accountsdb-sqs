@@ -18,5 +18,12 @@
     }, {
         "owner": "Vote111111111111111111111111111111111111111",
         "data_size": 100
+    }, {
+        "tokenkeg_owner": [
+            "GUfCR9mK6azb9vcpsxgXyj7XRPAKJd4KMHTTVvtncGgp"
+        ],
+        "tokenkeg_delegate": [
+            "1BWutmTvYPwDtmw9abTkS4Ssr8no61spGAvW1X6NDix"
+        ]
     }]
 }
