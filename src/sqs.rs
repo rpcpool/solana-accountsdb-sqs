@@ -241,10 +241,11 @@ impl AwsSqsClient {
         send_jobs: Arc<AtomicU64>,
         startup_job: Arc<AtomicBool>,
     ) -> SqsClientResult {
-        let filter = AccountsFilter::new(config.filter);
         let max_requests = config.sqs.max_requests;
         let commitment_level = config.sqs.commitment_level;
         let (client, queue_url) = Self::create_sqs(config.sqs)?;
+        let is_slot_messages_enabled = config.slots.messages;
+        let filter = AccountsFilter::new(config.filter);
 
         // Check that SQS is available
         client
@@ -563,7 +564,9 @@ impl AwsSqsClient {
                                 current_slot = slot;
                             }
                         }
-                        messages.push(Message::UpdateSlot((status, slot)));
+                        if is_slot_messages_enabled {
+                            messages.push(Message::UpdateSlot((status, slot)));
+                        }
                     }
                     Some(Message::StartupFinished) => unreachable!(),
                     Some(Message::Shutdown) | None => {

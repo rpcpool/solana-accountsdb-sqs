@@ -19,6 +19,7 @@ pub struct Config {
     pub libpath: String,
     pub log: ConfigLog,
     pub sqs: ConfigAwsSqs,
+    pub slots: ConfigSlots,
     #[serde(rename = "filters")]
     pub filter: ConfigAccountsFilter,
 }
@@ -83,6 +84,11 @@ pub enum ConfigAwsAuth {
         credentials_file: String,
         profile: Option<String>,
     },
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct ConfigSlots {
+    pub messages: bool,
 }
 
 #[derive(Debug, Default, Clone)]
