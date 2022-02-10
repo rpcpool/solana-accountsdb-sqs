@@ -16,7 +16,7 @@ use {
         GetQueueAttributesError, GetQueueAttributesRequest, SendMessageBatchError,
         SendMessageBatchRequest, SendMessageBatchRequestEntry, Sqs, SqsClient as RusotoSqsClient,
     },
-    serde::{Deserialize, Serialize},
+    serde::{Deserialize, Serialize, Serializer},
     serde_json::json,
     solana_accountsdb_plugin_interface::accountsdb_plugin_interface::{
         ReplicaAccountInfoVersions, SlotStatus as AccountsDbSlotStatus,
@@ -133,6 +133,32 @@ enum Message {
     Shutdown,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum FilterType {
+    OwnerDataSize,
+    TokenkegOwner,
+    TokenkegDelegate,
+}
+
+impl Serialize for FilterType {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(match *self {
+            FilterType::OwnerDataSize => "owner_data_size",
+            FilterType::TokenkegOwner => "tokenkeg_owner",
+            FilterType::TokenkegDelegate => "tokenkeg_delegate",
+        })
+    }
+}
+
+#[derive(Debug)]
+enum SendMessage {
+    Account((Vec<FilterType>, ReplicaAccountInfo)),
+    Slot((SlotStatus, u64)),
+}
+
 #[derive(Debug, Error)]
 pub enum SqsClientError {
     #[error("failed to create Runtime: {0}")]
@@ -220,11 +246,11 @@ impl AwsSqsClient {
     }
 
     pub fn update_account(&self, account: ReplicaAccountInfo) -> SqsClientResult {
-        if self.filter.contains(&account) || self.filter.contains_tokenkeg(&account) {
-            self.send_message(Message::UpdateAccount(account))
-        } else {
-            Ok(())
+        if self.filter.contains_owner_data_size(&account) || self.filter.contains_tokenkeg(&account)
+        {
+            self.send_message(Message::UpdateAccount(account))?;
         }
+        Ok(())
     }
 
     pub fn startup_finished(&self) -> SqsClientResult {
@@ -349,11 +375,43 @@ impl AwsSqsClient {
             Some(_) => 0,
             None => u64::MAX,
         };
-        let mut slots_messages: BTreeMap<u64, LinkedList<Message>> = BTreeMap::new();
+        let mut slots_messages: BTreeMap<u64, LinkedList<SendMessage>> = BTreeMap::new();
+        fn compact_messages(
+            slots_messages: &mut BTreeMap<u64, LinkedList<SendMessage>>,
+            compact_slot: u64,
+        ) {
+            // Merge possible filters
+            let mut vec = Vec::new();
+            let mut accounts = HashMap::new();
+            if let Some(list) = slots_messages.remove(&compact_slot) {
+                for item in list {
+                    match item {
+                        SendMessage::Account((mut filters, account)) => {
+                            match accounts.entry((account.pubkey, account.write_version)) {
+                                HashMapEntry::Occupied(e) => {
+                                    let index = *e.get();
+                                    if let Some(SendMessage::Account((afilters, _))) =
+                                        vec.get_mut(index)
+                                    {
+                                        afilters.append(&mut filters);
+                                    }
+                                }
+                                HashMapEntry::Vacant(e) => {
+                                    e.insert(vec.len());
+                                    vec.push(SendMessage::Account((filters, account)));
+                                }
+                            }
+                        }
+                        SendMessage::Slot(v) => vec.push(SendMessage::Slot(v)),
+                    }
+                }
+            }
+            slots_messages.insert(compact_slot, vec.into_iter().collect());
+        }
         fn fetch_slots_messages(
             current_slot: u64,
-            slots_messages: &mut BTreeMap<u64, LinkedList<Message>>,
-            messages: &mut Vec<Message>,
+            slots_messages: &mut BTreeMap<u64, LinkedList<SendMessage>>,
+            messages: &mut Vec<SendMessage>,
         ) {
             while messages.len() < messages.capacity() {
                 let slot = match slots_messages.keys().next().copied() {
@@ -373,7 +431,6 @@ impl AwsSqsClient {
             }
         }
 
-        let mut current_account_slot = 0;
         let mut tokenkeg_owner_waiting_accounts = Vec::new();
         let mut tokenkeg_owner_touched_accounts = HashSet::new();
         let mut tokenkeg_delegate_waiting_accounts = Vec::new();
@@ -387,10 +444,9 @@ impl AwsSqsClient {
             tokenkeg_delegate_accounts: &mut HashMap<Pubkey, BTreeSet<ReplicaAccountInfo>>,
             tokenkeg_delegate_waiting_accounts: &mut Vec<ReplicaAccountInfo>,
             tokenkeg_delegate_touched_accounts: &mut HashSet<Pubkey>,
-            slots_messages: &mut BTreeMap<u64, LinkedList<Message>>,
+            slots_messages: &mut BTreeMap<u64, LinkedList<SendMessage>>,
         ) {
             let mut accounts = HashSet::new();
-
             for account in tokenkeg_owner_waiting_accounts.drain(..) {
                 if let Some(set) = tokenkeg_owner_accounts.get_mut(&account.pubkey) {
                     tokenkeg_owner_touched_accounts.insert(account.pubkey);
@@ -426,7 +482,17 @@ impl AwsSqsClient {
                     tokenkeg_owner_accounts.remove(&pubkey);
                 }
             }
+            for account in accounts.into_iter() {
+                slots_messages
+                    .entry(account.slot)
+                    .or_default()
+                    .push_back(SendMessage::Account((
+                        vec![FilterType::TokenkegOwner],
+                        account,
+                    )));
+            }
 
+            let mut accounts = HashSet::new();
             for account in tokenkeg_delegate_waiting_accounts.drain(..) {
                 if let Some(set) = tokenkeg_delegate_accounts.get_mut(&account.pubkey) {
                     tokenkeg_delegate_touched_accounts.insert(account.pubkey);
@@ -469,17 +535,18 @@ impl AwsSqsClient {
                     tokenkeg_owner_accounts.remove(&pubkey);
                 }
             }
-
             for account in accounts.into_iter() {
                 slots_messages
                     .entry(account.slot)
                     .or_default()
-                    .push_back(Message::UpdateAccount(account));
+                    .push_back(SendMessage::Account((
+                        vec![FilterType::TokenkegDelegate],
+                        account,
+                    )));
             }
         }
 
-        let mut is_alive = true;
-        while is_alive || !slots_messages.is_empty() {
+        'outer: loop {
             while send_jobs.load(Ordering::Relaxed) >= max_requests {
                 // `tokio::time::sleep(Duration::from_nanos(100)).await` or some signal?
                 tokio::task::yield_now().await;
@@ -500,39 +567,27 @@ impl AwsSqsClient {
                 };
                 match maybe_message {
                     Some(Message::UpdateAccount(account)) => {
-                        if account.slot != current_account_slot {
-                            drain_tokenkeg_accounts(
-                                &filter,
-                                &mut tokenkeg_owner_accounts,
-                                &mut tokenkeg_owner_waiting_accounts,
-                                &mut tokenkeg_owner_touched_accounts,
-                                &mut tokenkeg_delegate_accounts,
-                                &mut tokenkeg_delegate_waiting_accounts,
-                                &mut tokenkeg_delegate_touched_accounts,
-                                &mut slots_messages,
+                        if filter.contains_owner_data_size(&account) {
+                            slots_messages.entry(account.slot).or_default().push_back(
+                                SendMessage::Account((
+                                    vec![FilterType::OwnerDataSize],
+                                    account.clone(),
+                                )),
                             );
-                            current_account_slot = account.slot;
                         }
 
-                        if filter.contains(&account) {
-                            if current_slot >= account.slot {
-                                messages.push(Message::UpdateAccount(account));
-                            } else {
-                                slots_messages
-                                    .entry(account.slot)
-                                    .or_default()
-                                    .push_back(Message::UpdateAccount(account));
-                            }
-                        } else if filter.contains_tokenkeg(&account) {
+                        if filter.contains_tokenkeg(&account) {
                             let owner = account.token_owner().expect("bad filter");
                             if filter.contains_tokenkeg_owner(&owner) {
                                 tokenkeg_owner_touched_accounts.insert(account.pubkey);
                                 let set = tokenkeg_owner_accounts.entry(account.pubkey);
                                 if let HashMapEntry::Vacant(_) = set {
-                                    slots_messages
-                                        .entry(account.slot)
-                                        .or_default()
-                                        .push_back(Message::UpdateAccount(account.clone()));
+                                    slots_messages.entry(account.slot).or_default().push_back(
+                                        SendMessage::Account((
+                                            vec![FilterType::TokenkegOwner],
+                                            account.clone(),
+                                        )),
+                                    );
                                 }
                                 set.or_default().insert(account.clone());
                             } else {
@@ -544,10 +599,12 @@ impl AwsSqsClient {
                                     tokenkeg_delegate_touched_accounts.insert(account.pubkey);
                                     let set = tokenkeg_delegate_accounts.entry(account.pubkey);
                                     if let HashMapEntry::Vacant(_) = set {
-                                        slots_messages
-                                            .entry(account.slot)
-                                            .or_default()
-                                            .push_back(Message::UpdateAccount(account.clone()));
+                                        slots_messages.entry(account.slot).or_default().push_back(
+                                            SendMessage::Account((
+                                                vec![FilterType::TokenkegDelegate],
+                                                account.clone(),
+                                            )),
+                                        );
                                     }
                                     set.or_default().insert(account);
                                 } else {
@@ -559,19 +616,29 @@ impl AwsSqsClient {
                         }
                     }
                     Some(Message::UpdateSlot((status, slot))) => {
-                        if let Some(commitment_level) = commitment_level {
-                            if status == commitment_level {
-                                current_slot = slot;
-                            }
+                        if status == SlotStatus::Processed {
+                            drain_tokenkeg_accounts(
+                                &filter,
+                                &mut tokenkeg_owner_accounts,
+                                &mut tokenkeg_owner_waiting_accounts,
+                                &mut tokenkeg_owner_touched_accounts,
+                                &mut tokenkeg_delegate_accounts,
+                                &mut tokenkeg_delegate_waiting_accounts,
+                                &mut tokenkeg_delegate_touched_accounts,
+                                &mut slots_messages,
+                            );
+                            compact_messages(&mut slots_messages, slot);
+                        }
+                        if Some(status) == commitment_level {
+                            current_slot = slot;
                         }
                         if is_slot_messages_enabled {
-                            messages.push(Message::UpdateSlot((status, slot)));
+                            messages.push(SendMessage::Slot((status, slot)));
                         }
                     }
                     Some(Message::StartupFinished) => unreachable!(),
                     Some(Message::Shutdown) | None => {
-                        is_alive = false;
-                        break;
+                        break 'outer;
                     }
                 }
             }
@@ -600,7 +667,7 @@ impl AwsSqsClient {
     async fn send_messages(
         client: RusotoSqsClient,
         queue_url: String,
-        messages: Vec<Message>,
+        messages: Vec<SendMessage>,
     ) -> SqsClientResult {
         let entries = messages
             .iter()
@@ -608,8 +675,9 @@ impl AwsSqsClient {
             .map(|(id, message)| SendMessageBatchRequestEntry {
                 id: id.to_string(),
                 message_body: match message {
-                    Message::UpdateAccount(account) => json!({
+                    SendMessage::Account((filters, account)) => json!({
                         "type": "account",
+                        "filters": filters,
                         "pubkey": account.pubkey.to_string(),
                         "lamports": account.lamports,
                         "owner": account.owner.to_string(),
@@ -619,13 +687,11 @@ impl AwsSqsClient {
                         "write_version": account.write_version,
                         "slot": account.slot,
                     }),
-                    Message::UpdateSlot((status, slot)) => json!({
+                    SendMessage::Slot((status, slot)) => json!({
                         "type": "slot",
                         "status": status,
                         "slot": slot,
                     }),
-                    Message::StartupFinished => unreachable!(),
-                    Message::Shutdown => unreachable!(),
                 }
                 .to_string(),
                 ..Default::default()
@@ -653,17 +719,15 @@ impl AwsSqsClient {
 
                             let index = entry.id.parse::<usize>().ok();
                             match index.and_then(|index| messages.get(index)).unwrap() {
-                                Message::UpdateAccount(account) => {
+                                SendMessage::Account((_filters, account)) => {
                                     value["pubkey"] = json!(account.pubkey.to_string());
                                     value["slot"] = json!(account.slot);
                                     value["write_version"] = json!(account.write_version);
                                 }
-                                Message::UpdateSlot((status, slot)) => {
+                                SendMessage::Slot((status, slot)) => {
                                     value["status"] = json!(status);
                                     value["slot"] = json!(slot);
                                 }
-                                Message::StartupFinished => unreachable!(),
-                                Message::Shutdown => unreachable!(),
                             }
 
                             value

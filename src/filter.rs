@@ -14,7 +14,7 @@ impl AccountsFilter {
         Self { filter }
     }
 
-    pub fn contains(&self, account: &ReplicaAccountInfo) -> bool {
+    pub fn contains_owner_data_size(&self, account: &ReplicaAccountInfo) -> bool {
         // Filter by size only
         let data_size = account.data.len();
         if self.filter.data_size.contains(&data_size) {
