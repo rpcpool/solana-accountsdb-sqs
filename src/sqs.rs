@@ -532,7 +532,7 @@ impl AwsSqsClient {
                     set.clear();
                     set.insert(last);
                 } else {
-                    tokenkeg_owner_accounts.remove(&pubkey);
+                    tokenkeg_delegate_accounts.remove(&pubkey);
                 }
             }
             for account in accounts.into_iter() {
