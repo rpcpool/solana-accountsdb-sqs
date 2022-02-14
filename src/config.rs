@@ -46,13 +46,27 @@ pub struct ConfigLog {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigAwsSqs {
-    pub commitment_level: Option<SlotStatus>,
+    #[serde(deserialize_with = "deserialize_commitment_level")]
+    pub commitment_level: SlotStatus,
     pub url: String,
     #[serde(deserialize_with = "deserialize_region")]
     pub region: Region,
     pub auth: ConfigAwsAuth,
     #[serde(deserialize_with = "deserialize_max_requests")]
     pub max_requests: u64,
+}
+
+fn deserialize_commitment_level<'de, D>(deserializer: D) -> Result<SlotStatus, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: Option<SlotStatus> = Deserialize::deserialize(deserializer)?;
+    match value.unwrap_or_default() {
+        SlotStatus::Processed => Err(de::Error::custom(
+            "`commitment_level` as `processed` is not supported",
+        )),
+        value => Ok(value),
+    }
 }
 
 fn deserialize_region<'de, D>(deserializer: D) -> Result<Region, D::Error>

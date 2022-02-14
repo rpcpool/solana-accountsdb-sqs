@@ -24,9 +24,7 @@ use {
     solana_sdk::pubkey::Pubkey,
     spl_token::{solana_program::program_pack::Pack, state::Account as SplTokenAccount},
     std::{
-        collections::{
-            hash_map::Entry as HashMapEntry, BTreeMap, BTreeSet, HashMap, HashSet, LinkedList,
-        },
+        collections::{BTreeMap, BTreeSet, HashMap},
         sync::{
             atomic::{AtomicBool, AtomicU64, Ordering},
             Arc,
@@ -115,6 +113,12 @@ pub enum SlotStatus {
     Finalized,
 }
 
+impl Default for SlotStatus {
+    fn default() -> Self {
+        SlotStatus::Finalized
+    }
+}
+
 impl From<AccountsDbSlotStatus> for SlotStatus {
     fn from(status: AccountsDbSlotStatus) -> Self {
         match status {
@@ -155,12 +159,14 @@ impl Serialize for FilterType {
 
 #[derive(Debug)]
 enum SendMessage {
-    Account((Vec<FilterType>, ReplicaAccountInfo)),
+    Account((ReplicaAccountInfo, Vec<FilterType>)),
     Slot((SlotStatus, u64)),
 }
 
 #[derive(Debug, Error)]
 pub enum SqsClientError {
+    #[error("invalid commitment_level: {0:?}")]
+    InvalidCommitmentLevel(SlotStatus),
     #[error("failed to create Runtime: {0}")]
     RuntimeCreate(std::io::Error),
     #[error("aws credential error: {0}")]
@@ -182,7 +188,6 @@ pub type SqsClientResult<T = ()> = Result<T, SqsClientError>;
 #[derive(Debug)]
 pub struct AwsSqsClient {
     runtime: Runtime,
-    filter: AccountsFilter,
     send_queue: mpsc::UnboundedSender<Message>,
     send_jobs: Arc<AtomicU64>,
     startup_job: Arc<AtomicBool>,
@@ -190,7 +195,15 @@ pub struct AwsSqsClient {
 
 impl AwsSqsClient {
     pub fn new(config: Config) -> SqsClientResult<Self> {
-        let filter = AccountsFilter::new(config.filter.clone());
+        if !matches!(
+            config.sqs.commitment_level,
+            SlotStatus::Confirmed | SlotStatus::Finalized
+        ) {
+            return Err(SqsClientError::InvalidCommitmentLevel(
+                config.sqs.commitment_level,
+            ));
+        }
+
         let send_jobs = Arc::new(AtomicU64::new(1));
         let send_jobs_loop = Arc::clone(&send_jobs);
         let startup_job = Arc::new(AtomicBool::new(true));
@@ -208,9 +221,9 @@ impl AwsSqsClient {
 
             Ok::<_, SqsClientError>(tx)
         })?;
+
         Ok(Self {
             runtime,
-            filter,
             send_queue,
             send_jobs,
             startup_job,
@@ -246,11 +259,7 @@ impl AwsSqsClient {
     }
 
     pub fn update_account(&self, account: ReplicaAccountInfo) -> SqsClientResult {
-        if self.filter.contains_owner_data_size(&account) || self.filter.contains_tokenkeg(&account)
-        {
-            self.send_message(Message::UpdateAccount(account))?;
-        }
-        Ok(())
+        self.send_message(Message::UpdateAccount(account))
     }
 
     pub fn startup_finished(&self) -> SqsClientResult {
@@ -282,27 +291,19 @@ impl AwsSqsClient {
             .await?;
 
         // Save required Tokenkeg Accounts
-        let mut tokenkeg_owner_accounts: HashMap<Pubkey, BTreeSet<ReplicaAccountInfo>> =
-            HashMap::new();
-        let mut tokenkeg_delegate_accounts: HashMap<Pubkey, BTreeSet<ReplicaAccountInfo>> =
-            HashMap::new();
+        let mut tokenkeg_owner_accounts: HashMap<Pubkey, ReplicaAccountInfo> = HashMap::new();
+        let mut tokenkeg_delegate_accounts: HashMap<Pubkey, ReplicaAccountInfo> = HashMap::new();
         while let Some(message) = rx.recv().await {
             match message {
                 Message::UpdateAccount(account) => {
                     if let Some(owner) = account.token_owner() {
                         if filter.contains_tokenkeg_owner(&owner) {
-                            tokenkeg_owner_accounts
-                                .entry(account.pubkey)
-                                .or_default()
-                                .insert(account.clone());
+                            tokenkeg_owner_accounts.insert(account.pubkey, account.clone());
                         }
                     }
                     if let Some(Some(delegate)) = account.token_delegate() {
                         if filter.contains_tokenkeg_delegate(&delegate) {
-                            tokenkeg_delegate_accounts
-                                .entry(account.pubkey)
-                                .or_default()
-                                .insert(account);
+                            tokenkeg_delegate_accounts.insert(account.pubkey, account.clone());
                         }
                     }
                 }
@@ -318,27 +319,33 @@ impl AwsSqsClient {
             }
         }
 
-        // spawn stats
+        // Spawn simple stats
         let send_jobs_stats = Arc::clone(&send_jobs);
         let (stats_queued_tx, mut stats_queued_rx) = mpsc::unbounded_channel();
+        let (stats_inprocess_tx, mut stats_inprocess_rx) = mpsc::unbounded_channel();
         let (stats_processed_tx, mut stats_processed_rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
             let mut last_update = Instant::now();
             let mut queued = 0;
+            let mut inprocess = 0;
             let mut processed = 0;
             let mut processed_time = Duration::from_secs(0);
-            let mut inprocess = 0;
             loop {
                 if send_jobs_stats.load(Ordering::Relaxed) == 0 {
                     break;
                 }
 
-                while let Ok(()) = stats_queued_rx.try_recv() {
-                    queued += 1;
+                while let Ok(count) = stats_queued_rx.try_recv() {
+                    queued += count;
                 }
-                while let Ok(elapsed) = stats_processed_rx.try_recv() {
-                    processed += 1;
-                    processed_time += elapsed;
+                while let Ok(count) = stats_inprocess_rx.try_recv() {
+                    queued -= count;
+                    inprocess += count;
+                }
+                while let Ok((count, elapsed)) = stats_processed_rx.try_recv() {
+                    inprocess -= count;
+                    processed += count;
+                    processed_time += elapsed * count as u32;
                 }
 
                 if last_update.elapsed() < Duration::from_secs(10) {
@@ -346,16 +353,14 @@ impl AwsSqsClient {
                     continue;
                 }
 
-                inprocess += queued - processed;
                 log!(
                     if inprocess > 200 {
                         Level::Warn
                     } else {
                         Level::Info
                     },
-                    "queued: {}, processed: {}, in process: {}, avg processing time: {}",
+                    "queued: {}, in process: {}, avg processing time: {}",
                     queued,
-                    processed,
                     inprocess,
                     format_duration(
                         processed_time
@@ -365,299 +370,180 @@ impl AwsSqsClient {
                 );
 
                 last_update = Instant::now();
-                queued = 0;
                 processed = 0;
                 processed_time = Duration::from_secs(0);
             }
         });
 
-        let mut current_slot = match commitment_level {
-            Some(_) => 0,
-            None => u64::MAX,
-        };
-        let mut slots_messages: BTreeMap<u64, LinkedList<SendMessage>> = BTreeMap::new();
-        fn compact_messages(
-            slots_messages: &mut BTreeMap<u64, LinkedList<SendMessage>>,
-            compact_slot: u64,
-        ) {
-            // Merge possible filters
-            let mut vec = Vec::new();
-            let mut accounts = HashMap::new();
-            if let Some(list) = slots_messages.remove(&compact_slot) {
-                for item in list {
-                    match item {
-                        SendMessage::Account((mut filters, account)) => {
-                            match accounts.entry((account.pubkey, account.write_version)) {
-                                HashMapEntry::Occupied(e) => {
-                                    let index = *e.get();
-                                    if let Some(SendMessage::Account((afilters, _))) =
-                                        vec.get_mut(index)
-                                    {
-                                        afilters.append(&mut filters);
-                                    }
-                                }
-                                HashMapEntry::Vacant(e) => {
-                                    e.insert(vec.len());
-                                    vec.push(SendMessage::Account((filters, account)));
-                                }
-                            }
-                        }
-                        SendMessage::Slot(v) => vec.push(SendMessage::Slot(v)),
-                    }
-                }
-            }
-            slots_messages.insert(compact_slot, vec.into_iter().collect());
-        }
-        fn fetch_slots_messages(
-            current_slot: u64,
-            slots_messages: &mut BTreeMap<u64, LinkedList<SendMessage>>,
+        // Accounts and messages
+        let mut accounts: BTreeMap<u64, BTreeSet<ReplicaAccountInfo>> = BTreeMap::new();
+        let mut messages = vec![];
+
+        // Add new messages for an accounts on commitment_level
+        fn generate_messages(
             messages: &mut Vec<SendMessage>,
-        ) {
-            while messages.len() < messages.capacity() {
-                let slot = match slots_messages.keys().next().copied() {
-                    Some(slot) if slot <= current_slot => slot,
-                    _ => break,
-                };
-                let mut list = slots_messages.remove(&slot).unwrap();
-                while messages.len() < messages.capacity() {
-                    match list.pop_front() {
-                        Some(message) => messages.push(message),
-                        None => break,
-                    };
-                }
-                if !list.is_empty() {
-                    slots_messages.insert(slot, list);
-                }
-            }
-        }
-
-        let mut tokenkeg_owner_waiting_accounts = Vec::new();
-        let mut tokenkeg_owner_touched_accounts = HashSet::new();
-        let mut tokenkeg_delegate_waiting_accounts = Vec::new();
-        let mut tokenkeg_delegate_touched_accounts = HashSet::new();
-        #[allow(clippy::too_many_arguments)]
-        fn drain_tokenkeg_accounts(
+            accounts: &BTreeSet<ReplicaAccountInfo>,
             filter: &AccountsFilter,
-            tokenkeg_owner_accounts: &mut HashMap<Pubkey, BTreeSet<ReplicaAccountInfo>>,
-            tokenkeg_owner_waiting_accounts: &mut Vec<ReplicaAccountInfo>,
-            tokenkeg_owner_touched_accounts: &mut HashSet<Pubkey>,
-            tokenkeg_delegate_accounts: &mut HashMap<Pubkey, BTreeSet<ReplicaAccountInfo>>,
-            tokenkeg_delegate_waiting_accounts: &mut Vec<ReplicaAccountInfo>,
-            tokenkeg_delegate_touched_accounts: &mut HashSet<Pubkey>,
-            slots_messages: &mut BTreeMap<u64, LinkedList<SendMessage>>,
+            tokenkeg_owner_accounts: &mut HashMap<Pubkey, ReplicaAccountInfo>,
+            tokenkeg_delegate_accounts: &mut HashMap<Pubkey, ReplicaAccountInfo>,
         ) {
-            let mut accounts = HashSet::new();
-            for account in tokenkeg_owner_waiting_accounts.drain(..) {
-                if let Some(set) = tokenkeg_owner_accounts.get_mut(&account.pubkey) {
-                    tokenkeg_owner_touched_accounts.insert(account.pubkey);
-                    set.insert(account);
-                }
-            }
-            for pubkey in tokenkeg_owner_touched_accounts.drain() {
-                let set = tokenkeg_owner_accounts
-                    .get_mut(&pubkey)
-                    .expect("invalid touched account");
-                if set.len() == 1 {
-                    continue;
+            for account in accounts {
+                let mut filters = Vec::with_capacity(3);
+
+                if filter.contains_owner_data_size(account) {
+                    filters.push(FilterType::OwnerDataSize);
                 }
 
-                let mut owner_prev = set.iter().next().unwrap().token_owner().unwrap();
-                for account in set.iter().skip(1) {
-                    let owner = account.token_owner().unwrap();
-                    if owner != owner_prev
-                        && (filter.contains_tokenkeg_owner(&owner)
-                            || filter.contains_tokenkeg_owner(&owner_prev))
-                    {
-                        accounts.insert(account.clone());
+                if filter.contains_tokenkeg(account) {
+                    let owner = account.token_owner().expect("valid tokenkeg");
+                    if match tokenkeg_owner_accounts.get_mut(&account.pubkey) {
+                        Some(existed)
+                            if existed.token_owner().expect("valid tokenkeg") != owner =>
+                        {
+                            if filter.contains_tokenkeg_owner(&owner) {
+                                tokenkeg_owner_accounts.insert(account.pubkey, account.clone());
+                            } else {
+                                tokenkeg_owner_accounts.remove(&account.pubkey);
+                            }
+                            true
+                        }
+                        None if filter.contains_tokenkeg_owner(&owner) => {
+                            tokenkeg_owner_accounts.insert(account.pubkey, account.clone());
+                            true
+                        }
+                        _ => false,
+                    } {
+                        filters.push(FilterType::TokenkegOwner);
                     }
-                    owner_prev = owner;
-                }
 
-                let last = set.iter().last().unwrap().clone();
-                let last_owner = last.token_owner().expect("token account");
-                if filter.contains_tokenkeg_owner(&last_owner) {
-                    set.clear();
-                    set.insert(last);
-                } else {
-                    tokenkeg_owner_accounts.remove(&pubkey);
-                }
-            }
-            for account in accounts.into_iter() {
-                slots_messages
-                    .entry(account.slot)
-                    .or_default()
-                    .push_back(SendMessage::Account((
-                        vec![FilterType::TokenkegOwner],
-                        account,
-                    )));
-            }
-
-            let mut accounts = HashSet::new();
-            for account in tokenkeg_delegate_waiting_accounts.drain(..) {
-                if let Some(set) = tokenkeg_delegate_accounts.get_mut(&account.pubkey) {
-                    tokenkeg_delegate_touched_accounts.insert(account.pubkey);
-                    set.insert(account);
-                }
-            }
-            for pubkey in tokenkeg_delegate_touched_accounts.drain() {
-                let set = tokenkeg_delegate_accounts
-                    .get_mut(&pubkey)
-                    .expect("invalid touched account");
-                if set.len() == 1 {
-                    continue;
-                }
-
-                let mut delegate_prev = set.iter().next().unwrap().token_delegate().unwrap();
-                for account in set.iter().skip(1) {
-                    let delegate = account.token_delegate().unwrap();
-                    if delegate != delegate_prev
-                        && (delegate
-                            .map(|pubkey| filter.contains_tokenkeg_delegate(&pubkey))
-                            .unwrap_or(false)
-                            || delegate_prev
-                                .map(|pubkey| filter.contains_tokenkeg_delegate(&pubkey))
-                                .unwrap_or(false))
-                    {
-                        accounts.insert(account.clone());
+                    let delegate = account.token_delegate().expect("valid tokenkeg");
+                    if match (
+                        delegate,
+                        delegate.and_then(|_| tokenkeg_delegate_accounts.get_mut(&account.pubkey)),
+                    ) {
+                        (Some(delegate), Some(existed))
+                            if existed
+                                .token_delegate()
+                                .expect("valid tokenkeg")
+                                .expect("valid delegate")
+                                != delegate =>
+                        {
+                            if filter.contains_tokenkeg_delegate(&delegate) {
+                                tokenkeg_delegate_accounts.insert(account.pubkey, account.clone());
+                            } else {
+                                tokenkeg_delegate_accounts.remove(&account.pubkey);
+                            }
+                            true
+                        }
+                        (Some(delegate), None) if filter.contains_tokenkeg_delegate(&delegate) => {
+                            tokenkeg_delegate_accounts.insert(account.pubkey, account.clone());
+                            true
+                        }
+                        _ => false,
+                    } {
+                        filters.push(FilterType::TokenkegDelegate);
                     }
-                    delegate_prev = delegate;
                 }
 
-                let last = set.iter().last().unwrap().clone();
-                let last_delegate = last.token_delegate().expect("token account");
-                if last_delegate
-                    .map(|pubkey| filter.contains_tokenkeg_delegate(&pubkey))
-                    .unwrap_or(false)
-                {
-                    set.clear();
-                    set.insert(last);
-                } else {
-                    tokenkeg_delegate_accounts.remove(&pubkey);
+                if !filters.is_empty() {
+                    messages.push(SendMessage::Account((account.clone(), filters)));
                 }
-            }
-            for account in accounts.into_iter() {
-                slots_messages
-                    .entry(account.slot)
-                    .or_default()
-                    .push_back(SendMessage::Account((
-                        vec![FilterType::TokenkegDelegate],
-                        account,
-                    )));
             }
         }
 
-        'outer: loop {
+        // Handle messages
+        let mut account_current_slot = 0;
+        let mut status_current_slot = 0;
+        loop {
+            // TODO: improve new messages handling and available request awaiting
             while send_jobs.load(Ordering::Relaxed) >= max_requests {
                 // `tokio::time::sleep(Duration::from_nanos(100)).await` or some signal?
                 tokio::task::yield_now().await;
             }
 
-            let mut messages = Vec::with_capacity(10);
-            fetch_slots_messages(current_slot, &mut slots_messages, &mut messages);
-            while messages.len() < messages.capacity() {
-                // Wait first message in the queue and fetch all available but not more than max
-                let maybe_message = if messages.is_empty() {
-                    rx.recv().await
-                } else {
-                    match rx.try_recv() {
-                        Ok(message) => Some(message),
-                        Err(mpsc::error::TryRecvError::Disconnected) => None,
-                        Err(mpsc::error::TryRecvError::Empty) => break,
+            if !messages.is_empty() {
+                let messages = messages.drain(0..10).collect::<Vec<_>>();
+                let messages_count = messages.len();
+                let _ = stats_inprocess_tx.send(messages_count);
+                let client = client.clone();
+                let queue_url = queue_url.clone();
+                let stats_processed_tx = stats_processed_tx.clone();
+                let send_jobs = Arc::clone(&send_jobs);
+                send_jobs.fetch_add(1, Ordering::Relaxed);
+                tokio::spawn(async move {
+                    let ts = Instant::now();
+                    if let Err(error) = Self::send_messages(client, queue_url, messages).await {
+                        error!("failed to send data: {:?}", error);
                     }
-                };
-                match maybe_message {
-                    Some(Message::UpdateAccount(account)) => {
-                        if filter.contains_owner_data_size(&account) {
-                            slots_messages.entry(account.slot).or_default().push_back(
-                                SendMessage::Account((
-                                    vec![FilterType::OwnerDataSize],
-                                    account.clone(),
-                                )),
-                            );
-                        }
+                    let _ = stats_processed_tx.send((messages_count, ts.elapsed()));
+                    send_jobs.fetch_sub(1, Ordering::Relaxed);
+                });
 
-                        if filter.contains_tokenkeg(&account) {
-                            let owner = account.token_owner().expect("bad filter");
-                            if filter.contains_tokenkeg_owner(&owner) {
-                                tokenkeg_owner_touched_accounts.insert(account.pubkey);
-                                let set = tokenkeg_owner_accounts.entry(account.pubkey);
-                                if let HashMapEntry::Vacant(_) = set {
-                                    slots_messages.entry(account.slot).or_default().push_back(
-                                        SendMessage::Account((
-                                            vec![FilterType::TokenkegOwner],
-                                            account.clone(),
-                                        )),
-                                    );
-                                }
-                                set.or_default().insert(account.clone());
-                            } else {
-                                tokenkeg_owner_waiting_accounts.push(account.clone());
-                            }
-
-                            if let Some(delegate) = account.token_delegate().expect("bad filter") {
-                                if filter.contains_tokenkeg_delegate(&delegate) {
-                                    tokenkeg_delegate_touched_accounts.insert(account.pubkey);
-                                    let set = tokenkeg_delegate_accounts.entry(account.pubkey);
-                                    if let HashMapEntry::Vacant(_) = set {
-                                        slots_messages.entry(account.slot).or_default().push_back(
-                                            SendMessage::Account((
-                                                vec![FilterType::TokenkegDelegate],
-                                                account.clone(),
-                                            )),
-                                        );
-                                    }
-                                    set.or_default().insert(account);
-                                } else {
-                                    tokenkeg_delegate_waiting_accounts.push(account);
-                                }
-                            } else {
-                                tokenkeg_delegate_waiting_accounts.push(account);
-                            }
-                        }
-                    }
-                    Some(Message::UpdateSlot((status, slot))) => {
-                        if status == SlotStatus::Processed {
-                            drain_tokenkeg_accounts(
-                                &filter,
-                                &mut tokenkeg_owner_accounts,
-                                &mut tokenkeg_owner_waiting_accounts,
-                                &mut tokenkeg_owner_touched_accounts,
-                                &mut tokenkeg_delegate_accounts,
-                                &mut tokenkeg_delegate_waiting_accounts,
-                                &mut tokenkeg_delegate_touched_accounts,
-                                &mut slots_messages,
-                            );
-                            compact_messages(&mut slots_messages, slot);
-                        }
-                        if Some(status) == commitment_level {
-                            current_slot = slot;
-                        }
-                        if is_slot_messages_enabled {
-                            messages.push(SendMessage::Slot((status, slot)));
-                        }
-                    }
-                    Some(Message::StartupFinished) => unreachable!(),
-                    Some(Message::Shutdown) | None => {
-                        break 'outer;
-                    }
-                }
+                continue;
             }
-            fetch_slots_messages(current_slot, &mut slots_messages, &mut messages);
 
-            let _ = stats_queued_tx.send(());
-            let client = client.clone();
-            let queue_url = queue_url.clone();
-            let stats_processed_tx = stats_processed_tx.clone();
-            let send_jobs = Arc::clone(&send_jobs);
-            send_jobs.fetch_add(1, Ordering::Relaxed);
-            tokio::spawn(async move {
-                let ts = Instant::now();
-                if let Err(error) = Self::send_messages(client, queue_url, messages).await {
-                    error!("failed to send data: {:?}", error);
+            match rx.recv().await {
+                Some(Message::UpdateAccount(account)) => {
+                    if account_current_slot != account.slot {
+                        // Remove too old accounts (320 slots)
+                        while let Some(slot) = accounts.keys().next().cloned() {
+                            if account_current_slot
+                                .checked_sub(slot)
+                                .map(|diff| diff < 320)
+                                .unwrap_or(true)
+                            {
+                                break;
+                            }
+                            accounts.remove(&slot);
+                        }
+
+                        // Drop previous accounts changes
+                        accounts.insert(account.slot, Default::default());
+
+                        account_current_slot = account.slot;
+                    }
+
+                    accounts
+                        .get_mut(&account.slot)
+                        .expect("already inserted")
+                        .insert(account);
                 }
-                let _ = stats_processed_tx.send(ts.elapsed());
-                send_jobs.fetch_sub(1, Ordering::Relaxed);
-            });
+                Some(Message::UpdateSlot((status, slot))) => {
+                    if is_slot_messages_enabled {
+                        messages.push(SendMessage::Slot((status, slot)));
+                        let _ = stats_queued_tx.send(1);
+                    }
+
+                    if status == commitment_level && status_current_slot != slot {
+                        assert!(matches!(
+                            commitment_level,
+                            SlotStatus::Confirmed | SlotStatus::Finalized
+                        ));
+
+                        match accounts.get(&slot) {
+                            Some(accounts) => {
+                                let size = messages.len();
+                                generate_messages(
+                                    &mut messages,
+                                    accounts,
+                                    &filter,
+                                    &mut tokenkeg_owner_accounts,
+                                    &mut tokenkeg_delegate_accounts,
+                                );
+                                let _ = stats_queued_tx.send(messages.len() - size);
+                            }
+                            None => error!(
+                                "send_loop error: accounts for slot {} does not exists",
+                                slot
+                            ),
+                        }
+
+                        status_current_slot = slot;
+                    }
+                }
+                Some(Message::StartupFinished) => unreachable!(),
+                Some(Message::Shutdown) | None => break,
+            }
         }
         send_jobs.fetch_sub(1, Ordering::Relaxed);
 
@@ -675,7 +561,7 @@ impl AwsSqsClient {
             .map(|(id, message)| SendMessageBatchRequestEntry {
                 id: id.to_string(),
                 message_body: match message {
-                    SendMessage::Account((filters, account)) => json!({
+                    SendMessage::Account((account, filters)) => json!({
                         "type": "account",
                         "filters": filters,
                         "pubkey": account.pubkey.to_string(),
@@ -719,7 +605,7 @@ impl AwsSqsClient {
 
                             let index = entry.id.parse::<usize>().ok();
                             match index.and_then(|index| messages.get(index)).unwrap() {
-                                SendMessage::Account((_filters, account)) => {
+                                SendMessage::Account((account, _filters)) => {
                                     value["pubkey"] = json!(account.pubkey.to_string());
                                     value["slot"] = json!(account.slot);
                                     value["write_version"] = json!(account.write_version);
