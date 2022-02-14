@@ -318,6 +318,7 @@ impl AwsSqsClient {
                 }
             }
         }
+        info!("startup finished");
 
         // Spawn simple stats
         let send_jobs_stats = Arc::clone(&send_jobs);
@@ -359,9 +360,10 @@ impl AwsSqsClient {
                     } else {
                         Level::Info
                     },
-                    "queued: {}, in process: {}, avg processing time: {}",
+                    "queued: {}, in process: {}, processed: {}, avg processing time: {}",
                     queued,
                     inprocess,
+                    processed,
                     format_duration(
                         processed_time
                             .checked_div(processed as u32)
@@ -462,7 +464,8 @@ impl AwsSqsClient {
             }
 
             if !messages.is_empty() {
-                let messages = messages.drain(0..10).collect::<Vec<_>>();
+                let slice = 0..messages.len().min(10);
+                let messages = messages.drain(slice).collect::<Vec<_>>();
                 let messages_count = messages.len();
                 let _ = stats_inprocess_tx.send(messages_count);
                 let client = client.clone();
@@ -546,6 +549,7 @@ impl AwsSqsClient {
             }
         }
         send_jobs.fetch_sub(1, Ordering::Relaxed);
+        info!("update_loop finished");
 
         Ok(())
     }
