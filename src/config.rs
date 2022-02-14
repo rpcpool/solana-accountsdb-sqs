@@ -46,7 +46,7 @@ pub struct ConfigLog {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigAwsSqs {
-    #[serde(deserialize_with = "deserialize_commitment_level")]
+    #[serde(default, deserialize_with = "deserialize_commitment_level")]
     pub commitment_level: SlotStatus,
     pub url: String,
     #[serde(deserialize_with = "deserialize_region")]
@@ -60,8 +60,7 @@ fn deserialize_commitment_level<'de, D>(deserializer: D) -> Result<SlotStatus, D
 where
     D: Deserializer<'de>,
 {
-    let value: Option<SlotStatus> = Deserialize::deserialize(deserializer)?;
-    match value.unwrap_or_default() {
+    match Deserialize::deserialize(deserializer)? {
         SlotStatus::Processed => Err(de::Error::custom(
             "`commitment_level` as `processed` is not supported",
         )),
