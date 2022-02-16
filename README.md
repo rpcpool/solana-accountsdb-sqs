@@ -76,3 +76,18 @@ Filter accounts with size 256:
     "data_size": 256
 }
 ```
+
+### Tokenkeg filters
+
+Accounts can be filtered by `owner` and `delegate` fields in Tokenkeg account (when field changed *from* or *to* specified value):
+
+```json
+{
+    "tokenkeg_owner": [
+        "GUfCR9mK6azb9vcpsxgXyj7XRPAKJd4KMHTTVvtncGgp"
+    ],
+    "tokenkeg_delegate": [
+        "1BWutmTvYPwDtmw9abTkS4Ssr8no61spGAvW1X6NDix"
+    ]
+}
+```
