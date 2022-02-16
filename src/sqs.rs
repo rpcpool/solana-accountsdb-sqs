@@ -377,9 +377,22 @@ impl AwsSqsClient {
             }
         });
 
-        // Accounts and messages
-        let mut accounts: BTreeMap<u64, BTreeSet<ReplicaAccountInfo>> = BTreeMap::new();
+        // Messages, accounts and tokenkeg history changes
         let mut messages = vec![];
+        let mut accounts: BTreeMap<u64, BTreeSet<ReplicaAccountInfo>> = BTreeMap::new();
+        type TokenkegHist = BTreeMap<u64, HashMap<Pubkey, Option<ReplicaAccountInfo>>>;
+        let mut tokenkeg_owner_accounts_hist: TokenkegHist = BTreeMap::new();
+        let mut tokenkeg_delegate_accounts_hist: TokenkegHist = BTreeMap::new();
+
+        // Remove outdated slots from `BTreeMap<u64, T>` (accounts, tokenkeg history)
+        fn remove_outdated_slots<T>(map: &mut BTreeMap<u64, T>, min_slot: u64) {
+            loop {
+                match map.keys().next().cloned() {
+                    Some(slot) if slot < min_slot => map.remove(&slot),
+                    _ => break,
+                };
+            }
+        }
 
         // Add new messages for an accounts on commitment_level
         fn generate_messages(
@@ -388,6 +401,8 @@ impl AwsSqsClient {
             filter: &AccountsFilter,
             tokenkeg_owner_accounts: &mut HashMap<Pubkey, ReplicaAccountInfo>,
             tokenkeg_delegate_accounts: &mut HashMap<Pubkey, ReplicaAccountInfo>,
+            tokenkeg_owner_accounts_hist: &mut HashMap<Pubkey, Option<ReplicaAccountInfo>>,
+            tokenkeg_delegate_accounts_hist: &mut HashMap<Pubkey, Option<ReplicaAccountInfo>>,
         ) {
             for account in accounts {
                 let mut filters = Vec::with_capacity(3);
@@ -398,30 +413,33 @@ impl AwsSqsClient {
 
                 if filter.contains_tokenkeg(account) {
                     let owner = account.token_owner().expect("valid tokenkeg");
-                    if match tokenkeg_owner_accounts.get_mut(&account.pubkey) {
-                        Some(existed)
-                            if existed.token_owner().expect("valid tokenkeg") != owner =>
-                        {
-                            if filter.contains_tokenkeg_owner(&owner) {
-                                tokenkeg_owner_accounts.insert(account.pubkey, account.clone());
-                            } else {
-                                tokenkeg_owner_accounts.remove(&account.pubkey);
+                    if let Some((pubkey, value)) =
+                        match tokenkeg_owner_accounts.get(&account.pubkey) {
+                            Some(existed)
+                                if existed.token_owner().expect("valid tokenkeg") != owner =>
+                            {
+                                let prev = if filter.contains_tokenkeg_owner(&owner) {
+                                    tokenkeg_owner_accounts.insert(account.pubkey, account.clone())
+                                } else {
+                                    tokenkeg_owner_accounts.remove(&account.pubkey)
+                                };
+                                Some((account.pubkey, prev))
                             }
-                            true
+                            None if filter.contains_tokenkeg_owner(&owner) => {
+                                tokenkeg_owner_accounts.insert(account.pubkey, account.clone());
+                                Some((account.pubkey, None))
+                            }
+                            _ => None,
                         }
-                        None if filter.contains_tokenkeg_owner(&owner) => {
-                            tokenkeg_owner_accounts.insert(account.pubkey, account.clone());
-                            true
-                        }
-                        _ => false,
-                    } {
+                    {
+                        tokenkeg_owner_accounts_hist.entry(pubkey).or_insert(value);
                         filters.push(FilterType::TokenkegOwner);
                     }
 
                     let delegate = account.token_delegate().expect("valid tokenkeg");
-                    if match (
+                    if let Some((pubkey, value)) = match (
                         delegate,
-                        delegate.and_then(|_| tokenkeg_delegate_accounts.get_mut(&account.pubkey)),
+                        delegate.and_then(|_| tokenkeg_delegate_accounts.get(&account.pubkey)),
                     ) {
                         (Some(delegate), Some(existed))
                             if existed
@@ -430,19 +448,22 @@ impl AwsSqsClient {
                                 .expect("valid delegate")
                                 != delegate =>
                         {
-                            if filter.contains_tokenkeg_delegate(&delegate) {
-                                tokenkeg_delegate_accounts.insert(account.pubkey, account.clone());
+                            let prev = if filter.contains_tokenkeg_delegate(&delegate) {
+                                tokenkeg_delegate_accounts.insert(account.pubkey, account.clone())
                             } else {
-                                tokenkeg_delegate_accounts.remove(&account.pubkey);
-                            }
-                            true
+                                tokenkeg_delegate_accounts.remove(&account.pubkey)
+                            };
+                            Some((account.pubkey, prev))
                         }
                         (Some(delegate), None) if filter.contains_tokenkeg_delegate(&delegate) => {
                             tokenkeg_delegate_accounts.insert(account.pubkey, account.clone());
-                            true
+                            Some((account.pubkey, None))
                         }
-                        _ => false,
+                        _ => None,
                     } {
+                        tokenkeg_delegate_accounts_hist
+                            .entry(pubkey)
+                            .or_insert(value);
                         filters.push(FilterType::TokenkegDelegate);
                     }
                 }
@@ -450,6 +471,19 @@ impl AwsSqsClient {
                 if !filters.is_empty() {
                     messages.push(SendMessage::Account((account.clone(), filters)));
                 }
+            }
+        }
+
+        // Restore previous state in case of fork
+        fn tokenkeg_revert(
+            accounts: &mut HashMap<Pubkey, ReplicaAccountInfo>,
+            hist: HashMap<Pubkey, Option<ReplicaAccountInfo>>,
+        ) {
+            for (pubkey, maybe_account) in hist.into_iter() {
+                match maybe_account {
+                    Some(account) => accounts.insert(pubkey, account),
+                    None => accounts.remove(&pubkey),
+                };
             }
         }
 
@@ -488,21 +522,8 @@ impl AwsSqsClient {
             match rx.recv().await {
                 Some(Message::UpdateAccount(account)) => {
                     if account_current_slot != account.slot {
-                        // Remove too old accounts (320 slots)
-                        while let Some(slot) = accounts.keys().next().cloned() {
-                            if account_current_slot
-                                .checked_sub(slot)
-                                .map(|diff| diff < 320)
-                                .unwrap_or(true)
-                            {
-                                break;
-                            }
-                            accounts.remove(&slot);
-                        }
-
                         // Drop previous accounts changes
                         accounts.insert(account.slot, Default::default());
-
                         account_current_slot = account.slot;
                     }
 
@@ -523,6 +544,23 @@ impl AwsSqsClient {
                             SlotStatus::Confirmed | SlotStatus::Finalized
                         ));
 
+                        // Remove outdated data (keep 320 slots)
+                        if let Some(min_slot) = slot.checked_sub(320) {
+                            remove_outdated_slots(&mut accounts, min_slot);
+                            remove_outdated_slots(&mut tokenkeg_owner_accounts_hist, min_slot);
+                            remove_outdated_slots(&mut tokenkeg_delegate_accounts_hist, min_slot);
+                        }
+
+                        // Handle reorg
+                        for slot in (slot..=status_current_slot).rev() {
+                            if let Some(hist) = tokenkeg_owner_accounts_hist.remove(&slot) {
+                                tokenkeg_revert(&mut tokenkeg_owner_accounts, hist);
+                            }
+                            if let Some(hist) = tokenkeg_delegate_accounts_hist.remove(&slot) {
+                                tokenkeg_revert(&mut tokenkeg_delegate_accounts, hist);
+                            }
+                        }
+
                         match accounts.get(&slot) {
                             Some(accounts) => {
                                 let size = messages.len();
@@ -532,6 +570,8 @@ impl AwsSqsClient {
                                     &filter,
                                     &mut tokenkeg_owner_accounts,
                                     &mut tokenkeg_delegate_accounts,
+                                    tokenkeg_owner_accounts_hist.entry(slot).or_default(),
+                                    tokenkeg_delegate_accounts_hist.entry(slot).or_default(),
                                 );
                                 let _ = stats_queued_tx.send(messages.len() - size);
                             }
