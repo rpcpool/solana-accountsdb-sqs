@@ -53,7 +53,7 @@ pub struct ConfigAwsSqs {
     pub region: Region,
     pub auth: ConfigAwsAuth,
     #[serde(deserialize_with = "deserialize_max_requests")]
-    pub max_requests: u64,
+    pub max_requests: usize,
 }
 
 fn deserialize_commitment_level<'de, D>(deserializer: D) -> Result<SlotStatus, D::Error>
@@ -76,12 +76,12 @@ where
     value.parse().map_err(de::Error::custom)
 }
 
-fn deserialize_max_requests<'de, D>(deserializer: D) -> Result<u64, D::Error>
+fn deserialize_max_requests<'de, D>(deserializer: D) -> Result<usize, D::Error>
 where
     D: Deserializer<'de>,
 {
-    Ok(match u64::deserialize(deserializer)? {
-        0 => u64::MAX,
+    Ok(match usize::deserialize(deserializer)? {
+        0 => usize::MAX,
         value => value,
     })
 }

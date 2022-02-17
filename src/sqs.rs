@@ -5,6 +5,7 @@ use {
     },
     arrayref::array_ref,
     async_trait::async_trait,
+    futures::future::FutureExt,
     humantime::format_duration,
     log::*,
     rusoto_core::{HttpClient, RusotoError},
@@ -25,15 +26,20 @@ use {
     spl_token::{solana_program::program_pack::Pack, state::Account as SplTokenAccount},
     std::{
         collections::{BTreeMap, BTreeSet, HashMap},
+        convert::TryInto,
         sync::{
-            atomic::{AtomicBool, AtomicU64, Ordering},
+            atomic::{AtomicBool, Ordering},
             Arc,
         },
         thread::sleep,
         time::{Duration, Instant},
     },
     thiserror::Error,
-    tokio::{runtime::Runtime, sync::mpsc, time::sleep as sleep_async},
+    tokio::{
+        runtime::Runtime,
+        sync::{mpsc, Semaphore},
+        time::sleep as sleep_async,
+    },
 };
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -189,8 +195,8 @@ pub type SqsClientResult<T = ()> = Result<T, SqsClientError>;
 pub struct AwsSqsClient {
     runtime: Runtime,
     send_queue: mpsc::UnboundedSender<Message>,
-    send_jobs: Arc<AtomicU64>,
     startup_job: Arc<AtomicBool>,
+    send_job: Arc<AtomicBool>,
 }
 
 impl AwsSqsClient {
@@ -204,16 +210,16 @@ impl AwsSqsClient {
             ));
         }
 
-        let send_jobs = Arc::new(AtomicU64::new(1));
-        let send_jobs_loop = Arc::clone(&send_jobs);
         let startup_job = Arc::new(AtomicBool::new(true));
         let startup_job_loop = Arc::clone(&startup_job);
+        let send_job = Arc::new(AtomicBool::new(true));
+        let send_job_loop = Arc::clone(&send_job);
         let runtime = Runtime::new().map_err(SqsClientError::RuntimeCreate)?;
         let send_queue = runtime.block_on(async move {
             let (tx, rx) = mpsc::unbounded_channel();
             tokio::spawn(async move {
                 if let Err(error) =
-                    Self::send_loop(config, rx, send_jobs_loop, startup_job_loop).await
+                    Self::send_loop(config, rx, startup_job_loop, send_job_loop).await
                 {
                     error!("update_loop failed: {:?}", error);
                 }
@@ -225,8 +231,8 @@ impl AwsSqsClient {
         Ok(Self {
             runtime,
             send_queue,
-            send_jobs,
             startup_job,
+            send_job,
         })
     }
 
@@ -246,7 +252,7 @@ impl AwsSqsClient {
 
     pub fn shutdown(self) {
         if let Ok(()) = self.send_message(Message::Shutdown) {
-            while self.send_jobs.load(Ordering::Relaxed) > 0 {
+            while self.send_job.load(Ordering::Relaxed) {
                 sleep(Duration::from_micros(10));
             }
         }
@@ -273,8 +279,8 @@ impl AwsSqsClient {
     async fn send_loop(
         config: Config,
         mut rx: mpsc::UnboundedReceiver<Message>,
-        send_jobs: Arc<AtomicU64>,
         startup_job: Arc<AtomicBool>,
+        send_job: Arc<AtomicBool>,
     ) -> SqsClientResult {
         let max_requests = config.sqs.max_requests;
         let commitment_level = config.sqs.commitment_level;
@@ -313,7 +319,7 @@ impl AwsSqsClient {
                     break;
                 }
                 Message::Shutdown => {
-                    send_jobs.fetch_sub(1, Ordering::Relaxed);
+                    send_job.store(false, Ordering::Relaxed);
                     return Ok(());
                 }
             }
@@ -321,7 +327,7 @@ impl AwsSqsClient {
         info!("startup finished");
 
         // Spawn simple stats
-        let send_jobs_stats = Arc::clone(&send_jobs);
+        let send_job_stats = Arc::clone(&send_job);
         let (stats_queued_tx, mut stats_queued_rx) = mpsc::unbounded_channel();
         let (stats_inprocess_tx, mut stats_inprocess_rx) = mpsc::unbounded_channel();
         let (stats_processed_tx, mut stats_processed_rx) = mpsc::unbounded_channel();
@@ -332,7 +338,7 @@ impl AwsSqsClient {
             let mut processed = 0;
             let mut processed_time = Duration::from_secs(0);
             loop {
-                if send_jobs_stats.load(Ordering::Relaxed) == 0 {
+                if !send_job_stats.load(Ordering::Relaxed) {
                     break;
                 }
 
@@ -488,16 +494,11 @@ impl AwsSqsClient {
         }
 
         // Handle messages
+        let send_jobs = Arc::new(Semaphore::new(max_requests));
         let mut account_current_slot = 0;
         let mut status_current_slot = 0;
         loop {
-            // TODO: improve new messages handling and available request awaiting
-            while send_jobs.load(Ordering::Relaxed) >= max_requests {
-                // `tokio::time::sleep(Duration::from_nanos(100)).await` or some signal?
-                tokio::task::yield_now().await;
-            }
-
-            if !messages.is_empty() {
+            if !messages.is_empty() && send_jobs.available_permits() > 0 {
                 let slice = 0..messages.len().min(10);
                 let messages = messages.drain(slice).collect::<Vec<_>>();
                 let messages_count = messages.len();
@@ -506,89 +507,101 @@ impl AwsSqsClient {
                 let queue_url = queue_url.clone();
                 let stats_processed_tx = stats_processed_tx.clone();
                 let send_jobs = Arc::clone(&send_jobs);
-                send_jobs.fetch_add(1, Ordering::Relaxed);
+                let send_permit = send_jobs.try_acquire_owned().expect("available permit");
                 tokio::spawn(async move {
                     let ts = Instant::now();
                     if let Err(error) = Self::send_messages(client, queue_url, messages).await {
                         error!("failed to send data: {:?}", error);
                     }
                     let _ = stats_processed_tx.send((messages_count, ts.elapsed()));
-                    send_jobs.fetch_sub(1, Ordering::Relaxed);
+                    drop(send_permit);
                 });
-
                 continue;
             }
 
-            match rx.recv().await {
-                Some(Message::UpdateAccount(account)) => {
-                    if account_current_slot != account.slot {
-                        // Drop previous accounts changes
-                        accounts.insert(account.slot, Default::default());
-                        account_current_slot = account.slot;
-                    }
+            let send_jobs_readiness = if messages.is_empty() {
+                futures::future::pending().boxed()
+            } else {
+                send_jobs.acquire().map(|_| ()).boxed()
+            };
 
-                    accounts
-                        .get_mut(&account.slot)
-                        .expect("already inserted")
-                        .insert(account);
+            tokio::select! {
+                _ = send_jobs_readiness => {},
+                message = rx.recv() => match message {
+                    Some(Message::UpdateAccount(account)) => {
+                        if account_current_slot != account.slot {
+                            // Drop previous accounts changes
+                            accounts.insert(account.slot, Default::default());
+                            account_current_slot = account.slot;
+                        }
+
+                        accounts
+                            .get_mut(&account.slot)
+                            .expect("already inserted")
+                            .insert(account);
+                    }
+                    Some(Message::UpdateSlot((status, slot))) => {
+                        if is_slot_messages_enabled {
+                            messages.push(SendMessage::Slot((status, slot)));
+                            let _ = stats_queued_tx.send(1);
+                        }
+
+                        if status == commitment_level && status_current_slot != slot {
+                            assert!(matches!(
+                                commitment_level,
+                                SlotStatus::Confirmed | SlotStatus::Finalized
+                            ));
+
+                            // Remove outdated data (keep 320 slots)
+                            if let Some(min_slot) = slot.checked_sub(320) {
+                                remove_outdated_slots(&mut accounts, min_slot);
+                                remove_outdated_slots(&mut tokenkeg_owner_accounts_hist, min_slot);
+                                remove_outdated_slots(&mut tokenkeg_delegate_accounts_hist, min_slot);
+                            }
+
+                            // Handle reorg
+                            for slot in (slot..=status_current_slot).rev() {
+                                if let Some(hist) = tokenkeg_owner_accounts_hist.remove(&slot) {
+                                    tokenkeg_revert(&mut tokenkeg_owner_accounts, hist);
+                                }
+                                if let Some(hist) = tokenkeg_delegate_accounts_hist.remove(&slot) {
+                                    tokenkeg_revert(&mut tokenkeg_delegate_accounts, hist);
+                                }
+                            }
+
+                            match accounts.get(&slot) {
+                                Some(accounts) => {
+                                    let size = messages.len();
+                                    generate_messages(
+                                        &mut messages,
+                                        accounts,
+                                        &filter,
+                                        &mut tokenkeg_owner_accounts,
+                                        &mut tokenkeg_delegate_accounts,
+                                        tokenkeg_owner_accounts_hist.entry(slot).or_default(),
+                                        tokenkeg_delegate_accounts_hist.entry(slot).or_default(),
+                                    );
+                                    let _ = stats_queued_tx.send(messages.len() - size);
+                                }
+                                None => error!(
+                                    "send_loop error: accounts for slot {} does not exists",
+                                    slot
+                                ),
+                            }
+
+                            status_current_slot = slot;
+                        }
+                    }
+                    Some(Message::StartupFinished) => unreachable!(),
+                    Some(Message::Shutdown) | None => break,
                 }
-                Some(Message::UpdateSlot((status, slot))) => {
-                    if is_slot_messages_enabled {
-                        messages.push(SendMessage::Slot((status, slot)));
-                        let _ = stats_queued_tx.send(1);
-                    }
-
-                    if status == commitment_level && status_current_slot != slot {
-                        assert!(matches!(
-                            commitment_level,
-                            SlotStatus::Confirmed | SlotStatus::Finalized
-                        ));
-
-                        // Remove outdated data (keep 320 slots)
-                        if let Some(min_slot) = slot.checked_sub(320) {
-                            remove_outdated_slots(&mut accounts, min_slot);
-                            remove_outdated_slots(&mut tokenkeg_owner_accounts_hist, min_slot);
-                            remove_outdated_slots(&mut tokenkeg_delegate_accounts_hist, min_slot);
-                        }
-
-                        // Handle reorg
-                        for slot in (slot..=status_current_slot).rev() {
-                            if let Some(hist) = tokenkeg_owner_accounts_hist.remove(&slot) {
-                                tokenkeg_revert(&mut tokenkeg_owner_accounts, hist);
-                            }
-                            if let Some(hist) = tokenkeg_delegate_accounts_hist.remove(&slot) {
-                                tokenkeg_revert(&mut tokenkeg_delegate_accounts, hist);
-                            }
-                        }
-
-                        match accounts.get(&slot) {
-                            Some(accounts) => {
-                                let size = messages.len();
-                                generate_messages(
-                                    &mut messages,
-                                    accounts,
-                                    &filter,
-                                    &mut tokenkeg_owner_accounts,
-                                    &mut tokenkeg_delegate_accounts,
-                                    tokenkeg_owner_accounts_hist.entry(slot).or_default(),
-                                    tokenkeg_delegate_accounts_hist.entry(slot).or_default(),
-                                );
-                                let _ = stats_queued_tx.send(messages.len() - size);
-                            }
-                            None => error!(
-                                "send_loop error: accounts for slot {} does not exists",
-                                slot
-                            ),
-                        }
-
-                        status_current_slot = slot;
-                    }
-                }
-                Some(Message::StartupFinished) => unreachable!(),
-                Some(Message::Shutdown) | None => break,
             }
         }
-        send_jobs.fetch_sub(1, Ordering::Relaxed);
+        let _ = send_jobs
+            .acquire_many(max_requests.try_into().expect("valid size"))
+            .await
+            .expect("alive");
+        send_job.store(false, Ordering::Relaxed);
         info!("update_loop finished");
 
         Ok(())
