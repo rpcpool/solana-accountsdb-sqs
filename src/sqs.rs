@@ -251,7 +251,7 @@ impl AwsSqsClient {
     }
 
     pub fn shutdown(self) {
-        if let Ok(()) = self.send_message(Message::Shutdown) {
+        if self.send_message(Message::Shutdown).is_ok() {
             while self.send_job.load(Ordering::Relaxed) {
                 sleep(Duration::from_micros(10));
             }
@@ -546,7 +546,7 @@ impl AwsSqsClient {
                             let _ = stats_queued_tx.send(1);
                         }
 
-                        if status == commitment_level && status_current_slot != slot {
+                        if status == commitment_level {
                             assert!(matches!(
                                 commitment_level,
                                 SlotStatus::Confirmed | SlotStatus::Finalized
