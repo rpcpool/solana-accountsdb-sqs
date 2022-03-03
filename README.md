@@ -91,3 +91,23 @@ Accounts can be filtered by `owner` and `delegate` fields in Tokenkeg account (w
     ]
 }
 ```
+
+### Sample SQS messages
+
+Message matching an owner filter:
+```
+{
+    "data": "JEUwEoDhfYfMelONKGC7EeZcXrRT6lUHSnYcdIMkwvz7+JphEypNMqodwc1cnR16QKXhycV448DIRhZ2cEf0xZvhaQgSIsjxAMOd0AAAAAA=",
+    "executable": false,
+    "filters": [
+        "owner_data_size"
+    ],
+    "lamports": 1447680,
+    "owner": "MEisE1HzehtrDpAAT8PnLHjpSSkRYakotTuJRPjTpo8",
+    "pubkey": "7nFcBnqt83uQdootsfpDi5vaVuXuL4DjvsnxnqQ1ps4e",
+    "rent_epoch": 285,
+    "slot": 123290000,
+    "type": "account",
+    "write_version": 236443918472
+}
+```
