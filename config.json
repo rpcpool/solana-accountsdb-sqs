@@ -1,5 +1,5 @@
 {
-    "libpath": "/home/kirill/projects/solana-accountsdb-sqs/target/debug/libsolana_accountsdb_sqs.so",
+    "libpath": "libsolana_accountsdb_sqs.so",
     "log": {
         "level": "info"
     },
