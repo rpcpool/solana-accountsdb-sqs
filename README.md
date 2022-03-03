@@ -111,3 +111,22 @@ Message matching an owner filter:
     "write_version": 236443918472
 }
 ```
+
+Message matching a tokenkeg filter:
+
+```
+{
+    "data": "B7cGehJ8vTDz6yS3Dy2+/irpr0uFNvJGOk1/J8Go5mCXh3ML3zliZHwPURW1a39T5sRm3WJ4Kjw7jIIruUXOmAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "executable": false,
+    "filters": [
+        "tokenkeg_owner"
+    ],
+    "lamports": 2039280,
+    "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "pubkey": "3dcHyQ4SjMqgDjr2Maeq5HrgiuWRzRqovJxb4bWMmyxh",
+    "rent_epoch": 285,
+    "slot": 123309601,
+    "type": "account",
+    "write_version": 236563574827
+}
+```
