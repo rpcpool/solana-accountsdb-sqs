@@ -2,8 +2,8 @@ use {
     super::sqs::SlotStatus,
     rusoto_core::Region,
     serde::{de, Deserialize, Deserializer},
-    solana_accountsdb_plugin_interface::accountsdb_plugin_interface::{
-        AccountsDbPluginError, Result as PluginResult,
+    solana_geyser_plugin_interface::geyser_plugin_interface::{
+        GeyserPluginError, Result as PluginResult,
     },
     solana_sdk::pubkey::Pubkey,
     std::{
@@ -26,13 +26,13 @@ pub struct Config {
 
 impl Config {
     fn load_from_str(config: &str) -> PluginResult<Self> {
-        serde_json::from_str(config).map_err(|error| AccountsDbPluginError::ConfigFileReadError {
+        serde_json::from_str(config).map_err(|error| GeyserPluginError::ConfigFileReadError {
             msg: error.to_string(),
         })
     }
 
     pub fn load_from_file<P: AsRef<Path>>(file: P) -> PluginResult<Self> {
-        let config = read_to_string(file).map_err(AccountsDbPluginError::ConfigFileOpenError)?;
+        let config = read_to_string(file).map_err(GeyserPluginError::ConfigFileOpenError)?;
         Self::load_from_str(&config)
     }
 }

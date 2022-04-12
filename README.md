@@ -1,4 +1,4 @@
-# solana-accountsdb-sqs
+# solana-geyser-sqs
 
 ### Build
 
@@ -13,7 +13,7 @@ Plugin config example located in [config.json](config.json). **You need change `
 Now you can run validator with plugin:
 
 ```bash
-$ solana-validator --accountsdb-plugin-config ./config.json
+$ solana-validator --geyser-plugin-config ./config.json
 ```
 
 ### AWS Credentials

@@ -1,8 +1,8 @@
 use {
     crate::{config::Config, sqs::AwsSqsClient},
-    solana_accountsdb_plugin_interface::accountsdb_plugin_interface::{
-        AccountsDbPlugin, AccountsDbPluginError, ReplicaAccountInfoVersions,
-        Result as PluginResult, SlotStatus,
+    solana_geyser_plugin_interface::geyser_plugin_interface::{
+        GeyserPlugin, GeyserPluginError, ReplicaAccountInfoVersions, Result as PluginResult,
+        SlotStatus,
     },
 };
 
@@ -17,9 +17,9 @@ impl Plugin {
     }
 }
 
-impl AccountsDbPlugin for Plugin {
+impl GeyserPlugin for Plugin {
     fn name(&self) -> &'static str {
-        "AccountsDbPluginSqs"
+        "GeyserPluginSqs"
     }
 
     fn on_load(&mut self, config_file: &str) -> PluginResult<()> {
@@ -32,7 +32,7 @@ impl AccountsDbPlugin for Plugin {
         // Sqs client
         self.sqs = Some(
             AwsSqsClient::new(config)
-                .map_err(|error| AccountsDbPluginError::Custom(Box::new(error)))?,
+                .map_err(|error| GeyserPluginError::Custom(Box::new(error)))?,
         );
 
         Ok(())
@@ -51,14 +51,14 @@ impl AccountsDbPlugin for Plugin {
         _is_startup: bool,
     ) -> PluginResult<()> {
         self.get_sqs()
-            .update_account((account, slot).into())
-            .map_err(|error| AccountsDbPluginError::Custom(Box::new(error)))
+            .update_account(account, slot)
+            .map_err(|error| GeyserPluginError::Custom(Box::new(error)))
     }
 
     fn notify_end_of_startup(&mut self) -> PluginResult<()> {
         self.get_sqs()
             .startup_finished()
-            .map_err(|error| AccountsDbPluginError::Custom(Box::new(error)))
+            .map_err(|error| GeyserPluginError::Custom(Box::new(error)))
     }
 
     fn update_slot_status(
@@ -69,7 +69,7 @@ impl AccountsDbPlugin for Plugin {
     ) -> PluginResult<()> {
         self.get_sqs()
             .update_slot(slot, status)
-            .map_err(|error| AccountsDbPluginError::Custom(Box::new(error)))
+            .map_err(|error| GeyserPluginError::Custom(Box::new(error)))
     }
 }
 
@@ -77,9 +77,9 @@ impl AccountsDbPlugin for Plugin {
 #[allow(improper_ctypes_definitions)]
 /// # Safety
 ///
-/// This function returns the Plugin pointer as trait AccountsDbPlugin.
-pub unsafe extern "C" fn _create_plugin() -> *mut dyn AccountsDbPlugin {
+/// This function returns the Plugin pointer as trait GeyserPlugin.
+pub unsafe extern "C" fn _create_plugin() -> *mut dyn GeyserPlugin {
     let plugin = Plugin::default();
-    let plugin: Box<dyn AccountsDbPlugin> = Box::new(plugin);
+    let plugin: Box<dyn GeyserPlugin> = Box::new(plugin);
     Box::into_raw(plugin)
 }

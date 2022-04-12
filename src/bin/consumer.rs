@@ -1,24 +1,24 @@
 use {
     anyhow::Result,
-    clap::{crate_name, App, Arg},
+    clap::{crate_name, Arg, Command},
     humantime::format_rfc3339_millis,
     rusoto_sqs::{
         DeleteMessageBatchRequest, DeleteMessageBatchRequestEntry, ReceiveMessageRequest,
         ReceiveMessageResult, Sqs,
     },
-    solana_accountsdb_sqs::{config::Config, sqs::AwsSqsClient},
+    solana_geyser_sqs::{config::Config, sqs::AwsSqsClient},
     std::time::SystemTime,
     tokio::time::{sleep, Duration},
 };
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = App::new(crate_name!())
+    let args = Command::new(crate_name!())
         .arg(
-            Arg::with_name("config")
-                .help("Path to accountsdb plugin config")
+            Arg::new("config")
+                .help("Path to geyser plugin config")
                 .long("config")
-                .short("c")
+                .short('c')
                 .required(true)
                 .takes_value(true),
         )

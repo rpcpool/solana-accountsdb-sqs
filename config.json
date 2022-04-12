@@ -1,5 +1,5 @@
 {
-    "libpath": "libsolana_accountsdb_sqs.so",
+    "libpath": "libsolana_geyser_sqs.so",
     "log": {
         "level": "info"
     },
@@ -9,7 +9,7 @@
         "commitment_level": "confirmed",
         "max_requests": 10000,
         "auth": {
-          "access_key_id": "AKIA5CXFIGO3K4BCALB6",
+          "access_key_id": "access_key_id",
           "secret_access_key": "secret_access_key"
         }
     },
@@ -20,7 +20,7 @@
         "owner": "MEisE1HzehtrDpAAT8PnLHjpSSkRYakotTuJRPjTpo8",
         "data_size": 80
     }, {
-        "owner": "M2mx93ekt1fmXSVkTrUL9xVFHkmME8HTUi5Cyc5aF7K?",
+        "owner": "M2mx93ekt1fmXSVkTrUL9xVFHkmME8HTUi5Cyc5aF7K",
         "data_size": 193
     }, {
         "tokenkeg_owner": [

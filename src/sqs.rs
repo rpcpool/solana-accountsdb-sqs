@@ -19,8 +19,8 @@ use {
     },
     serde::{Deserialize, Serialize, Serializer},
     serde_json::json,
-    solana_accountsdb_plugin_interface::accountsdb_plugin_interface::{
-        ReplicaAccountInfoVersions, SlotStatus as AccountsDbSlotStatus,
+    solana_geyser_plugin_interface::geyser_plugin_interface::{
+        ReplicaAccountInfoVersions, SlotStatus as GeyserSlotStatus,
     },
     solana_sdk::pubkey::Pubkey,
     spl_token::{solana_program::program_pack::Pack, state::Account as SplTokenAccount},
@@ -125,12 +125,12 @@ impl Default for SlotStatus {
     }
 }
 
-impl From<AccountsDbSlotStatus> for SlotStatus {
-    fn from(status: AccountsDbSlotStatus) -> Self {
+impl From<GeyserSlotStatus> for SlotStatus {
+    fn from(status: GeyserSlotStatus) -> Self {
         match status {
-            AccountsDbSlotStatus::Processed => Self::Processed,
-            AccountsDbSlotStatus::Confirmed => Self::Confirmed,
-            AccountsDbSlotStatus::Rooted => Self::Finalized,
+            GeyserSlotStatus::Processed => Self::Processed,
+            GeyserSlotStatus::Confirmed => Self::Confirmed,
+            GeyserSlotStatus::Rooted => Self::Finalized,
         }
     }
 }
@@ -216,6 +216,15 @@ impl AwsSqsClient {
         let send_job_loop = Arc::clone(&send_job);
         let runtime = Runtime::new().map_err(SqsClientError::RuntimeCreate)?;
         let send_queue = runtime.block_on(async move {
+            // Check that SQS is available
+            let (client, queue_url) = Self::create_sqs(config.sqs.clone())?;
+            client
+                .get_queue_attributes(GetQueueAttributesRequest {
+                    attribute_names: None,
+                    queue_url: queue_url.clone(),
+                })
+                .await?;
+
             let (tx, rx) = mpsc::unbounded_channel();
             tokio::spawn(async move {
                 if let Err(error) =
@@ -260,12 +269,16 @@ impl AwsSqsClient {
         self.runtime.shutdown_timeout(Duration::from_secs(10));
     }
 
-    pub fn update_slot(&self, slot: u64, status: AccountsDbSlotStatus) -> SqsClientResult {
+    pub fn update_slot(&self, slot: u64, status: GeyserSlotStatus) -> SqsClientResult {
         self.send_message(Message::UpdateSlot((status.into(), slot)))
     }
 
-    pub fn update_account(&self, account: ReplicaAccountInfo) -> SqsClientResult {
-        self.send_message(Message::UpdateAccount(account))
+    pub fn update_account(
+        &self,
+        account: ReplicaAccountInfoVersions,
+        slot: u64,
+    ) -> SqsClientResult {
+        self.send_message(Message::UpdateAccount((account, slot).into()))
     }
 
     pub fn startup_finished(&self) -> SqsClientResult {
@@ -287,14 +300,6 @@ impl AwsSqsClient {
         let (client, queue_url) = Self::create_sqs(config.sqs)?;
         let is_slot_messages_enabled = config.slots.messages;
         let filter = AccountsFilter::new(config.filter);
-
-        // Check that SQS is available
-        client
-            .get_queue_attributes(GetQueueAttributesRequest {
-                attribute_names: None,
-                queue_url: queue_url.clone(),
-            })
-            .await?;
 
         // Save required Tokenkeg Accounts
         let mut tokenkeg_owner_accounts: HashMap<Pubkey, ReplicaAccountInfo> = HashMap::new();
