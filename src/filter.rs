@@ -1,7 +1,10 @@
 use {
-    super::{config::ConfigAccountsFilter, sqs::ReplicaAccountInfo},
-    solana_sdk::pubkey::Pubkey,
-    spl_token::{solana_program::program_pack::Pack, state::Account as SplTokenAccount},
+    super::{
+        config::{ConfigAccountsFilter, ConfigTransactionsFilter},
+        sqs::{ReplicaAccountInfo, ReplicaTransactionInfo},
+    },
+    solana_sdk::{program_pack::Pack, pubkey::Pubkey},
+    spl_token::state::Account as SplTokenAccount,
 };
 
 #[derive(Debug, Default, Clone)]
@@ -42,5 +45,28 @@ impl AccountsFilter {
 
     pub fn contains_tokenkeg_delegate(&self, pubkey: &Pubkey) -> bool {
         self.filter.tokenkeg_delegate.contains(pubkey)
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct TransactionsFilter {
+    filter: ConfigTransactionsFilter,
+}
+
+impl TransactionsFilter {
+    pub fn new(filter: ConfigTransactionsFilter) -> Self {
+        Self { filter }
+    }
+
+    pub fn contains(&self, transaction: &ReplicaTransactionInfo) -> bool {
+        if !self.filter.active {
+            return false;
+        }
+
+        if transaction.is_vote && !self.filter.vote {
+            return false;
+        }
+
+        true
     }
 }

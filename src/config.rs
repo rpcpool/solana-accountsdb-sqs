@@ -20,8 +20,10 @@ pub struct Config {
     pub log: ConfigLog,
     pub sqs: ConfigAwsSqs,
     pub slots: ConfigSlots,
-    #[serde(rename = "filters")]
-    pub filter: ConfigAccountsFilter,
+    #[serde(rename = "accounts")]
+    pub accounts_filter: ConfigAccountsFilter,
+    #[serde(rename = "transactions")]
+    pub transactions_filter: ConfigTransactionsFilter,
 }
 
 impl Config {
@@ -185,4 +187,11 @@ impl<'de> Deserialize<'de> for ConfigAccountsFilter {
         }
         Ok(filter)
     }
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
+pub struct ConfigTransactionsFilter {
+    pub active: bool,
+    #[serde(default)]
+    pub vote: bool,
 }

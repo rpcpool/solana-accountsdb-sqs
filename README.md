@@ -92,10 +92,24 @@ Accounts can be filtered by `owner` and `delegate` fields in Tokenkeg account (w
 }
 ```
 
+### Transaction filters
+
+Currently only one filter exists: `vote`.
+
+```json
+{
+    "transactions": {
+        "active": true,
+        "vote": false
+    }
+}
+```
+
 ### Sample SQS messages
 
 Message matching an owner filter:
-```
+
+```json
 {
     "data": "JEUwEoDhfYfMelONKGC7EeZcXrRT6lUHSnYcdIMkwvz7+JphEypNMqodwc1cnR16QKXhycV448DIRhZ2cEf0xZvhaQgSIsjxAMOd0AAAAAA=",
     "executable": false,
@@ -114,7 +128,7 @@ Message matching an owner filter:
 
 Message matching a tokenkeg filter:
 
-```
+```json
 {
     "data": "B7cGehJ8vTDz6yS3Dy2+/irpr0uFNvJGOk1/J8Go5mCXh3ML3zliZHwPURW1a39T5sRm3WJ4Kjw7jIIruUXOmAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     "executable": false,
@@ -128,5 +142,33 @@ Message matching a tokenkeg filter:
     "slot": 123309601,
     "type": "account",
     "write_version": 236563574827
+}
+```
+
+Message matching a transaction filter:
+
+```json
+{
+    "meta": {
+        "err": null,
+        "fee": 10000,
+        "innerInstructions": [],
+        "logMessages": [
+            "Program Vote111111111111111111111111111111111111111 invoke [1]",
+            "Program Vote111111111111111111111111111111111111111 success"
+        ],
+        "postBalances": [499997095000, 1000000000000000, 143487360, 1169280, 1],
+        "postTokenBalances": [],
+        "preBalances": [499997105000, 1000000000000000, 143487360, 1169280, 1],
+        "preTokenBalances": [],
+        "rewards": [],
+        "status": {
+            "Ok": null
+        }
+    },
+    "signature": "5k6VtaMh9iTifgZ5pNTm31T4BCobMeAFXvxDjsYpTjPLAVhgMPvwYRaMg5yaxHAqtjDa2o5bFwx4NFcuASoMxFz",
+    "slot": 621,
+    "transaction": "AgQXFwSYxFH87h7wrfgTOGKkB7cp0ALUn/sa+ZIC0BtEZfC0izqw8nSrHSsTgJyR3UopMS/il7Sw7/TCGatw/AGoeHVRKjzcouhH1sOcO8jPd8DUZUjjkSCxCQsoGev+EiamdRH76HINb1jmwSsRZy5ltQDtehV/GACjf6YsI8IGAgADBWq/1tY1Q0Uxay2cZ2AuZ6ns5oPAK6d7x+QITzsrbAqGeD6V2vys7Aji1g5puZKmytQC/polXFV7zhON6w8wt0kGp9UXGS8Kr8byZeP7d8x62oLFKdC+OxNuLQBVIAAAAAan1RcYx3TJKFZjmGkdXraLXrijm0ttXHNVWyEAAAAAB2FIHTV0dLt8TXYk69O9s9g1XnPREEP8DaNTgAAAAABknYvFYW4mcQxPTajheD5ptJrxqhd0jf4UN3jqnQ+99AEEBAECAwE9AgAAAAEAAAAAAAAAbAIAAAAAAADZBHfCuXX27yHwPoK7eTXB5FG8qIhJX8RSiTsCsF4KJwEbfFZiAAAAAA==",
+    "type": "transaction"
 }
 ```

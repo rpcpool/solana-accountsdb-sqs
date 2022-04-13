@@ -16,7 +16,7 @@
     "slots": {
         "messages": false
     },
-    "filters": [{
+    "accounts": [{
         "owner": "MEisE1HzehtrDpAAT8PnLHjpSSkRYakotTuJRPjTpo8",
         "data_size": 80
     }, {
@@ -29,5 +29,9 @@
         "tokenkeg_delegate": [
             "1BWutmTvYPwDtmw9abTkS4Ssr8no61spGAvW1X6NDix"
         ]
-    }]
+    }],
+    "transactions": {
+        "active": true,
+        "vote": true
+    }
 }

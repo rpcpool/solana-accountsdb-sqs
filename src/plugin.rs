@@ -1,8 +1,10 @@
+use crate::sqs::SqsClientResult;
+
 use {
     crate::{config::Config, sqs::AwsSqsClient},
     solana_geyser_plugin_interface::geyser_plugin_interface::{
-        GeyserPlugin, GeyserPluginError, ReplicaAccountInfoVersions, Result as PluginResult,
-        SlotStatus,
+        GeyserPlugin, GeyserPluginError, ReplicaAccountInfoVersions,
+        ReplicaTransactionInfoVersions, Result as PluginResult, SlotStatus,
     },
 };
 
@@ -12,8 +14,12 @@ pub struct Plugin {
 }
 
 impl Plugin {
-    fn get_sqs(&self) -> &AwsSqsClient {
-        self.sqs.as_ref().expect("initialized")
+    fn with_sqs<F>(&self, f: F) -> PluginResult<()>
+    where
+        F: for<'a> FnOnce(&'a AwsSqsClient) -> SqsClientResult,
+    {
+        let sqs = self.sqs.as_ref().expect("initialized");
+        f(sqs).map_err(|error| GeyserPluginError::Custom(Box::new(error)))
     }
 }
 
@@ -50,15 +56,11 @@ impl GeyserPlugin for Plugin {
         slot: u64,
         _is_startup: bool,
     ) -> PluginResult<()> {
-        self.get_sqs()
-            .update_account(account, slot)
-            .map_err(|error| GeyserPluginError::Custom(Box::new(error)))
+        self.with_sqs(|sqs| sqs.update_account(account, slot))
     }
 
     fn notify_end_of_startup(&mut self) -> PluginResult<()> {
-        self.get_sqs()
-            .startup_finished()
-            .map_err(|error| GeyserPluginError::Custom(Box::new(error)))
+        self.with_sqs(|sqs| sqs.startup_finished())
     }
 
     fn update_slot_status(
@@ -67,9 +69,19 @@ impl GeyserPlugin for Plugin {
         _parent: Option<u64>,
         status: SlotStatus,
     ) -> PluginResult<()> {
-        self.get_sqs()
-            .update_slot(slot, status)
-            .map_err(|error| GeyserPluginError::Custom(Box::new(error)))
+        self.with_sqs(|sqs| sqs.update_slot(slot, status))
+    }
+
+    fn notify_transaction(
+        &mut self,
+        transaction: ReplicaTransactionInfoVersions,
+        slot: u64,
+    ) -> PluginResult<()> {
+        self.with_sqs(|sqs| sqs.notify_transaction(transaction, slot))
+    }
+
+    fn transaction_notifications_enabled(&self) -> bool {
+        true
     }
 }
 
