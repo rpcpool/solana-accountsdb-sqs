@@ -16,7 +16,7 @@ pub struct Plugin {
 impl Plugin {
     fn with_sqs<F>(&self, f: F) -> PluginResult<()>
     where
-        F: for<'a> FnOnce(&'a AwsSqsClient) -> SqsClientResult,
+        F: FnOnce(&AwsSqsClient) -> SqsClientResult,
     {
         let sqs = self.sqs.as_ref().expect("initialized");
         f(sqs).map_err(|error| GeyserPluginError::Custom(Box::new(error)))
