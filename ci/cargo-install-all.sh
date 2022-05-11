@@ -62,8 +62,6 @@ echo "Install location: $installDir ($buildVariant)"
 
 cd "$(dirname "$0")"/..
 
-source ci/env.sh
-
 SECONDS=0
 
 mkdir -p "$installDir/lib"

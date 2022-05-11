@@ -14,10 +14,16 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
-      - name: Set env vars
+      - name: Set rust version
         run: |
           source ci/rust-version.sh
           echo "RUST_STABLE=$rust_stable" | tee -a $GITHUB_ENV
+
+      - name: Set env vars
+        run: |
+          source ci/env.sh
+          echo "GEYSER_PLUGIN_NAME=$plugin_name" | tee -a $GITHUB_ENV
+          echo "GEYSER_PLUGIN_LIB=lib${plugin_lib_name}" | tee -a $GITHUB_ENV
 
       - if: runner.os == 'Linux'
         run: |

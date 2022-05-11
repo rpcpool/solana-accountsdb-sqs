@@ -3,8 +3,6 @@ set -e
 
 cd "$(dirname "$0")/.."
 
-source ci/env.sh
-
 case "$CI_OS_NAME" in
 osx)
   _cputype="$(uname -m)"
