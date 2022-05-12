@@ -4,7 +4,7 @@
         "level": "info"
     },
     "sqs": {
-        "url": "https://sqs.us-west-2.amazonaws.com/899202692022/solana-block-updates",
+        "url": "https://sqs.us-west-2.amazonaws.com/899202692022/solana-geyser",
         "region": "us-west-2",
         "commitment_level": "confirmed",
         "max_requests": 10000,
@@ -22,13 +22,6 @@
     }, {
         "owner": "M2mx93ekt1fmXSVkTrUL9xVFHkmME8HTUi5Cyc5aF7K",
         "data_size": 193
-    }, {
-        "tokenkeg_owner": [
-            "GUfCR9mK6azb9vcpsxgXyj7XRPAKJd4KMHTTVvtncGgp"
-        ],
-        "tokenkeg_delegate": [
-            "1BWutmTvYPwDtmw9abTkS4Ssr8no61spGAvW1X6NDix"
-        ]
     }],
     "transactions": {
         "active": true,
