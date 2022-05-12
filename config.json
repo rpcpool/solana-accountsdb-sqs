@@ -16,13 +16,16 @@
     "slots": {
         "messages": false
     },
-    "accounts": [{
-        "owner": "MEisE1HzehtrDpAAT8PnLHjpSSkRYakotTuJRPjTpo8",
-        "data_size": 80
-    }, {
-        "owner": "M2mx93ekt1fmXSVkTrUL9xVFHkmME8HTUi5Cyc5aF7K",
-        "data_size": 193
-    }],
+    "accounts": {
+        "me-80": {
+            "owner": ["MEisE1HzehtrDpAAT8PnLHjpSSkRYakotTuJRPjTpo8"],
+            "data_size": [80]
+        },
+        "m2-193": {
+            "owner": ["M2mx93ekt1fmXSVkTrUL9xVFHkmME8HTUi5Cyc5aF7K"],
+            "data_size": [193]
+        }
+    },
     "transactions": {
         "active": true,
         "vote": true

@@ -17,13 +17,16 @@ use {
         GetQueueAttributesError, GetQueueAttributesRequest, SendMessageBatchError,
         SendMessageBatchRequest, SendMessageBatchRequestEntry, Sqs, SqsClient as RusotoSqsClient,
     },
-    serde::{Deserialize, Serialize, Serializer},
+    serde::{Deserialize, Serialize},
     serde_json::json,
     solana_geyser_plugin_interface::geyser_plugin_interface::{
         ReplicaAccountInfoVersions, ReplicaTransactionInfoVersions, SlotStatus as GeyserSlotStatus,
     },
     solana_sdk::{
-        message::SanitizedMessage, program_pack::Pack, pubkey::Pubkey, signature::Signature,
+        message::SanitizedMessage,
+        program_pack::Pack,
+        pubkey::{Pubkey, PUBKEY_BYTES},
+        signature::Signature,
         transaction::Transaction,
     },
     solana_transaction_status::UiTransactionStatusMeta,
@@ -46,18 +49,14 @@ use {
     },
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, derivative::Derivative)]
+#[derivative(Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SlotStatus {
     Processed,
     Confirmed,
+    #[derivative(Default)]
     Finalized,
-}
-
-impl Default for SlotStatus {
-    fn default() -> Self {
-        SlotStatus::Finalized
-    }
 }
 
 impl From<GeyserSlotStatus> for SlotStatus {
@@ -85,7 +84,8 @@ pub struct ReplicaAccountInfo {
 impl ReplicaAccountInfo {
     pub fn token_owner(&self) -> Option<Pubkey> {
         if self.owner == spl_token::ID && self.data.len() == SplTokenAccount::LEN {
-            Some(Pubkey::new_from_array(*array_ref!(&self.data, 32, 32)))
+            let pubkey_array = *array_ref!(&self.data, 32, PUBKEY_BYTES);
+            Some(Pubkey::new_from_array(pubkey_array))
         } else {
             None
         }
@@ -96,7 +96,7 @@ impl ReplicaAccountInfo {
             Some(match *array_ref!(&self.data, 72, 4) {
                 [0, 0, 0, 0] => None,
                 [1, 0, 0, 0] => {
-                    let pubkey = Pubkey::new_from_array(*array_ref!(&self.data, 76, 32));
+                    let pubkey = Pubkey::new_from_array(*array_ref!(&self.data, 76, PUBKEY_BYTES));
                     Some(pubkey)
                 }
                 _ => None,
@@ -179,30 +179,10 @@ enum Message {
     Shutdown,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum FilterType {
-    OwnerDataSize,
-    TokenkegOwner,
-    TokenkegDelegate,
-}
-
-impl Serialize for FilterType {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(match *self {
-            FilterType::OwnerDataSize => "owner_data_size",
-            FilterType::TokenkegOwner => "tokenkeg_owner",
-            FilterType::TokenkegDelegate => "tokenkeg_delegate",
-        })
-    }
-}
-
 #[derive(Debug)]
 enum SendMessage {
     Slot((SlotStatus, u64)),
-    Account((ReplicaAccountInfo, Vec<FilterType>)),
+    Account((ReplicaAccountInfo, Vec<String>)),
     Transaction(Box<ReplicaTransactionInfo>),
 }
 
@@ -347,7 +327,8 @@ impl AwsSqsClient {
         let commitment_level = config.sqs.commitment_level;
         let (client, queue_url) = Self::create_sqs(config.sqs)?;
         let is_slot_messages_enabled = config.slots.messages;
-        let accounts_filter = AccountsFilter::new(config.accounts_filter);
+        let accounts_filter = AccountsFilter::new(config.accounts_filters);
+        log::info!("Sqs filters: {:#?}", accounts_filter);
         let transactions_filter = TransactionsFilter::new(config.transactions_filter);
 
         // Save required Tokenkeg Accounts
@@ -358,12 +339,15 @@ impl AwsSqsClient {
                 Message::UpdateSlot(_) => unreachable!(),
                 Message::UpdateAccount(account) => {
                     if let Some(owner) = account.token_owner() {
-                        if accounts_filter.contains_tokenkeg_owner(&owner) {
+                        if !accounts_filter.match_tokenkeg_owner(&owner).is_empty() {
                             tokenkeg_owner_accounts.insert(account.pubkey, account.clone());
                         }
                     }
                     if let Some(Some(delegate)) = account.token_delegate() {
-                        if accounts_filter.contains_tokenkeg_delegate(&delegate) {
+                        if !accounts_filter
+                            .match_tokenkeg_delegate(&delegate)
+                            .is_empty()
+                        {
                             tokenkeg_delegate_accounts.insert(account.pubkey, account.clone());
                         }
                     }
@@ -470,39 +454,48 @@ impl AwsSqsClient {
             transactions_filter: &TransactionsFilter,
         ) {
             for account in accounts {
-                let mut filters = Vec::with_capacity(3);
+                let mut filters = accounts_filter.create_match();
 
-                if accounts_filter.contains_owner_data_size(account) {
-                    filters.push(FilterType::OwnerDataSize);
-                }
+                filters
+                    .owner
+                    .extend(accounts_filter.match_owner(&account.owner).iter());
+                filters
+                    .data_size
+                    .extend(accounts_filter.match_data_size(account.data.len()).iter());
 
-                if accounts_filter.contains_tokenkeg(account) {
+                if accounts_filter.match_tokenkeg(account) {
                     let owner = account.token_owner().expect("valid tokenkeg");
-                    if let Some((pubkey, value)) =
+                    if let Some((pubkey, value, set)) =
                         match tokenkeg_owner_accounts.get(&account.pubkey) {
                             Some(existed)
                                 if existed.token_owner().expect("valid tokenkeg") != owner =>
                             {
-                                let prev = if accounts_filter.contains_tokenkeg_owner(&owner) {
-                                    tokenkeg_owner_accounts.insert(account.pubkey, account.clone())
-                                } else {
+                                let set = accounts_filter.match_tokenkeg_owner(&owner);
+                                let prev = if set.is_empty() {
                                     tokenkeg_owner_accounts.remove(&account.pubkey)
+                                } else {
+                                    tokenkeg_owner_accounts.insert(account.pubkey, account.clone())
                                 };
-                                Some((account.pubkey, prev))
+                                Some((account.pubkey, prev, set))
                             }
-                            None if accounts_filter.contains_tokenkeg_owner(&owner) => {
-                                tokenkeg_owner_accounts.insert(account.pubkey, account.clone());
-                                Some((account.pubkey, None))
+                            None => {
+                                let set = accounts_filter.match_tokenkeg_owner(&owner);
+                                if !set.is_empty() {
+                                    tokenkeg_owner_accounts.insert(account.pubkey, account.clone());
+                                    Some((account.pubkey, None, set))
+                                } else {
+                                    None
+                                }
                             }
                             _ => None,
                         }
                     {
                         tokenkeg_owner_accounts_hist.entry(pubkey).or_insert(value);
-                        filters.push(FilterType::TokenkegOwner);
+                        filters.tokenkeg_owner.extend(set.iter());
                     }
 
                     let delegate = account.token_delegate().expect("valid tokenkeg");
-                    if let Some((pubkey, value)) = match (
+                    if let Some((pubkey, value, set)) = match (
                         delegate,
                         delegate.and_then(|_| tokenkeg_delegate_accounts.get(&account.pubkey)),
                     ) {
@@ -513,28 +506,33 @@ impl AwsSqsClient {
                                 .expect("valid delegate")
                                 != delegate =>
                         {
-                            let prev = if accounts_filter.contains_tokenkeg_delegate(&delegate) {
-                                tokenkeg_delegate_accounts.insert(account.pubkey, account.clone())
-                            } else {
+                            let set = accounts_filter.match_tokenkeg_delegate(&delegate);
+                            let prev = if set.is_empty() {
                                 tokenkeg_delegate_accounts.remove(&account.pubkey)
+                            } else {
+                                tokenkeg_delegate_accounts.insert(account.pubkey, account.clone())
                             };
-                            Some((account.pubkey, prev))
+                            Some((account.pubkey, prev, set))
                         }
-                        (Some(delegate), None)
-                            if accounts_filter.contains_tokenkeg_delegate(&delegate) =>
-                        {
-                            tokenkeg_delegate_accounts.insert(account.pubkey, account.clone());
-                            Some((account.pubkey, None))
+                        (Some(delegate), None) => {
+                            let set = accounts_filter.match_tokenkeg_delegate(&delegate);
+                            if !set.is_empty() {
+                                tokenkeg_delegate_accounts.insert(account.pubkey, account.clone());
+                                Some((account.pubkey, None, set))
+                            } else {
+                                None
+                            }
                         }
                         _ => None,
                     } {
                         tokenkeg_delegate_accounts_hist
                             .entry(pubkey)
                             .or_insert(value);
-                        filters.push(FilterType::TokenkegDelegate);
+                        filters.tokenkeg_delegate.extend(set.iter());
                     }
                 }
 
+                let filters = filters.get_filters();
                 if !filters.is_empty() {
                     messages.push(SendMessage::Account((account.clone(), filters)));
                 }

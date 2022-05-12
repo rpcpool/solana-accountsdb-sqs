@@ -5,46 +5,151 @@ use {
     },
     solana_sdk::{program_pack::Pack, pubkey::Pubkey},
     spl_token::state::Account as SplTokenAccount,
+    std::{
+        collections::{HashMap, HashSet},
+        hash::Hash,
+    },
 };
 
 #[derive(Debug, Default, Clone)]
 pub struct AccountsFilter {
-    filter: ConfigAccountsFilter,
+    filters: Vec<String>,
+    owner: HashMap<Pubkey, HashSet<String>>,
+    owner_required: HashSet<String>,
+    data_size: HashMap<usize, HashSet<String>>,
+    data_size_required: HashSet<String>,
+    tokenkeg_owner: HashMap<Pubkey, HashSet<String>>,
+    tokenkeg_owner_required: HashSet<String>,
+    tokenkeg_delegate: HashMap<Pubkey, HashSet<String>>,
+    tokenkeg_delegate_required: HashSet<String>,
 }
 
 impl AccountsFilter {
-    pub fn new(filter: ConfigAccountsFilter) -> Self {
-        Self { filter }
+    pub fn new(filters: HashMap<String, ConfigAccountsFilter>) -> Self {
+        let mut this = Self::default();
+        for (name, filter) in filters {
+            this.filters.push(name.clone());
+            Self::set(
+                &mut this.owner,
+                &mut this.owner_required,
+                &name,
+                filter.owner,
+            );
+            Self::set(
+                &mut this.data_size,
+                &mut this.data_size_required,
+                &name,
+                filter.data_size,
+            );
+            Self::set(
+                &mut this.tokenkeg_owner,
+                &mut this.tokenkeg_owner_required,
+                &name,
+                filter.tokenkeg_owner,
+            );
+            Self::set(
+                &mut this.tokenkeg_delegate,
+                &mut this.tokenkeg_delegate_required,
+                &name,
+                filter.tokenkeg_delegate,
+            );
+        }
+        this
     }
 
-    pub fn contains_owner_data_size(&self, account: &ReplicaAccountInfo) -> bool {
-        // Filter by size only
-        let data_size = account.data.len();
-        if self.filter.data_size.contains(&data_size) {
-            return true;
+    fn set<Q: Hash + Eq>(
+        map: &mut HashMap<Q, HashSet<String>>,
+        set_required: &mut HashSet<String>,
+        name: &str,
+        set: HashSet<Q>,
+    ) {
+        if !set.is_empty() {
+            set_required.insert(name.to_string());
+            for key in set.into_iter() {
+                map.entry(key).or_default().insert(name.to_string());
+            }
         }
-
-        // Filter by owner with optional data size
-        if let Some(entry) = self.filter.owner.get(&account.owner) {
-            return entry.without_size || entry.sizes.contains(&data_size);
-        }
-
-        false
     }
 
-    pub fn contains_tokenkeg(&self, account: &ReplicaAccountInfo) -> bool {
-        // Any Tokenkeg Account
+    fn get<'a, Q: Hash + Eq>(map: &'a HashMap<Q, HashSet<String>>, key: &Q) -> HashSet<&'a str> {
+        map.get(key)
+            .map(|set| set.iter().map(|name| name.as_str()).collect::<HashSet<_>>())
+            .unwrap_or_default()
+    }
+
+    pub fn match_owner(&self, pubkey: &Pubkey) -> HashSet<&str> {
+        Self::get(&self.owner, pubkey)
+    }
+
+    pub fn match_data_size(&self, data_size: usize) -> HashSet<&str> {
+        Self::get(&self.data_size, &data_size)
+    }
+
+    // Any Tokenkeg Account
+    pub fn match_tokenkeg(&self, account: &ReplicaAccountInfo) -> bool {
         account.owner == spl_token::ID
             && account.data.len() == SplTokenAccount::LEN
-            && (!self.filter.tokenkeg_owner.is_empty() || !self.filter.tokenkeg_delegate.is_empty())
+            && (!self.tokenkeg_owner.is_empty() || !self.tokenkeg_delegate.is_empty())
     }
 
-    pub fn contains_tokenkeg_owner(&self, pubkey: &Pubkey) -> bool {
-        self.filter.tokenkeg_owner.contains(pubkey)
+    pub fn match_tokenkeg_owner(&self, pubkey: &Pubkey) -> HashSet<&str> {
+        Self::get(&self.tokenkeg_owner, pubkey)
     }
 
-    pub fn contains_tokenkeg_delegate(&self, pubkey: &Pubkey) -> bool {
-        self.filter.tokenkeg_delegate.contains(pubkey)
+    pub fn match_tokenkeg_delegate(&self, pubkey: &Pubkey) -> HashSet<&str> {
+        Self::get(&self.tokenkeg_delegate, pubkey)
+    }
+
+    pub fn create_match(&self) -> AccountsFilterMatch {
+        AccountsFilterMatch {
+            accounts_filter: self,
+            owner: HashSet::new(),
+            data_size: HashSet::new(),
+            tokenkeg_owner: HashSet::new(),
+            tokenkeg_delegate: HashSet::new(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct AccountsFilterMatch<'a> {
+    accounts_filter: &'a AccountsFilter,
+    pub owner: HashSet<&'a str>,
+    pub data_size: HashSet<&'a str>,
+    pub tokenkeg_owner: HashSet<&'a str>,
+    pub tokenkeg_delegate: HashSet<&'a str>,
+}
+
+impl<'a> AccountsFilterMatch<'a> {
+    pub fn get_filters(&self) -> Vec<String> {
+        self.accounts_filter
+            .filters
+            .iter()
+            .filter(|name| {
+                let name = name.as_str();
+                let af = &self.accounts_filter;
+
+                // If filter name in required but not in matched => return `false`
+                if af.owner_required.contains(name) && !self.owner.contains(name) {
+                    return false;
+                }
+                if af.data_size_required.contains(name) && !self.data_size.contains(name) {
+                    return false;
+                }
+                if af.tokenkeg_owner_required.contains(name) && !self.tokenkeg_owner.contains(name)
+                {
+                    return false;
+                }
+                if af.tokenkeg_delegate_required.contains(name)
+                    && !self.tokenkeg_delegate.contains(name)
+                {
+                    return false;
+                }
+
+                true
+            })
+            .cloned()
+            .collect()
     }
 }
 

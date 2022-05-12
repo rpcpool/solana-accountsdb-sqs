@@ -57,15 +57,21 @@ Currently two types of authentication are supported: `Static` and `File`.
 
 Accounts can be filtered by:
 
-- `owner` — account owner Pubkey
-- `data_size` — account data size
+- `owner` — account owner Pubkey, match to any Pubkey from the array
+- `data_size` — account data size, match to any value in the array
+- `tokenkeg_owner` —  `spl-token` accounts when `owner` field field in `Account` state match to any Pubkey from the array
+- `tokenkeg_delegate` —  `spl-token` accounts when `delegate` field field in `Account` state match to any Pubkey from the array
+
+All fields in filter are optional but at least 1 is required. Fields works as logical `AND`. Values in the arrays works as logical `OR`.
+
+##### Examples
 
 Filter accounts with `owner` Vote111111111111111111111111111111111111111` and size 128:
 
 ```json
 {
-    "owner": "Vote111111111111111111111111111111111111111",
-    "data_size": 128
+    "owner": ["Vote111111111111111111111111111111111111111"],
+    "data_size": [128]
 }
 ```
 
@@ -73,13 +79,9 @@ Filter accounts with size 256:
 
 ```json
 {
-    "data_size": 256
+    "data_size": [256]
 }
 ```
-
-### Tokenkeg filters
-
-Accounts can be filtered by `owner` and `delegate` fields in Tokenkeg account (when field changed *from* or *to* specified value):
 
 ```json
 {
@@ -114,7 +116,7 @@ Message matching an owner filter:
     "data": "JEUwEoDhfYfMelONKGC7EeZcXrRT6lUHSnYcdIMkwvz7+JphEypNMqodwc1cnR16QKXhycV448DIRhZ2cEf0xZvhaQgSIsjxAMOd0AAAAAA=",
     "executable": false,
     "filters": [
-        "owner_data_size"
+        "my-filter-name-1"
     ],
     "lamports": 1447680,
     "owner": "MEisE1HzehtrDpAAT8PnLHjpSSkRYakotTuJRPjTpo8",
@@ -133,7 +135,7 @@ Message matching a tokenkeg filter:
     "data": "B7cGehJ8vTDz6yS3Dy2+/irpr0uFNvJGOk1/J8Go5mCXh3ML3zliZHwPURW1a39T5sRm3WJ4Kjw7jIIruUXOmAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     "executable": false,
     "filters": [
-        "tokenkeg_owner"
+        "my-filter-1", "my-filter-2"
     ],
     "lamports": 2039280,
     "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",

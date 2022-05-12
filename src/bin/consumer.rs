@@ -6,10 +6,18 @@ use {
         DeleteMessageBatchRequest, DeleteMessageBatchRequestEntry, ReceiveMessageRequest,
         ReceiveMessageResult, Sqs,
     },
+    serde::Deserialize,
     solana_geyser_sqs::{config::Config, sqs::AwsSqsClient},
     std::time::SystemTime,
     tokio::time::{sleep, Duration},
 };
+
+#[derive(Debug, Deserialize)]
+struct Message<'a> {
+    pub pubkey: &'a str,
+    pub owner: &'a str,
+    pub filters: Vec<&'a str>,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -21,6 +29,13 @@ async fn main() -> Result<()> {
                 .short('c')
                 .required(true)
                 .takes_value(true),
+        )
+        .arg(
+            Arg::new("details")
+                .help("Print full messages")
+                .long("details")
+                .short('d')
+                .takes_value(false),
         )
         .get_matches();
 
@@ -60,7 +75,23 @@ async fn main() -> Result<()> {
             Ok(ReceiveMessageResult {
                 messages: Some(messages),
             }) => {
-                println!("{} | messages: {:?}", now, messages);
+                if args.is_present("details") {
+                    println!("{} | messages: {:?}", now, messages);
+                } else {
+                    let messages = messages
+                        .iter()
+                        .filter_map(|message| {
+                            message.body.as_ref().map(|body| {
+                                let msg = serde_json::from_str::<Message>(body).unwrap();
+                                format!(
+                                    "{} (owner: {}) => {:?}",
+                                    msg.pubkey, msg.owner, msg.filters
+                                )
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    println!("{} | messages: [{}]", now, messages.join(", "));
+                }
                 let entries = messages
                     .into_iter()
                     .enumerate()
