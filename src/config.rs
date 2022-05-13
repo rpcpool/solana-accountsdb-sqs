@@ -95,7 +95,7 @@ pub enum ConfigAwsAuth {
         access_key_id: String,
         secret_access_key: String,
     },
-    File {
+    Chain {
         credentials_file: String,
         profile: Option<String>,
     },

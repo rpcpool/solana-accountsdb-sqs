@@ -23,7 +23,7 @@ $ solana-validator --geyser-plugin-config ./config.json
 - `sqs:Write`
 - `sqs:GetAttribute`
 
-Currently two types of authentication are supported: `Static` and `File`.
+Currently two types of authentication are supported: `Static` and `Chain`.
 
 `Static` config:
 
@@ -38,7 +38,9 @@ Currently two types of authentication are supported: `Static` and `File`.
 }
 ```
 
-`File` config:
+https://docs.rs/rusoto_credential/latest/rusoto_credential/struct.StaticProvider.html
+
+`Chain` config:
 
 ```json
 {
@@ -52,6 +54,8 @@ Currently two types of authentication are supported: `Static` and `File`.
 ```
 
 `profile` field is optional, default value is `default`.
+
+https://docs.rs/rusoto_credential/latest/rusoto_credential/struct.ChainProvider.html
 
 ### Account filters
 

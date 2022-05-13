@@ -10,7 +10,7 @@ use {
     log::*,
     rusoto_core::{HttpClient, RusotoError},
     rusoto_credential::{
-        AutoRefreshingProvider, AwsCredentials, CredentialsError, ProfileProvider,
+        AutoRefreshingProvider, AwsCredentials, ChainProvider, CredentialsError, ProfileProvider,
         ProvideAwsCredentials, StaticProvider,
     },
     rusoto_sqs::{
@@ -770,9 +770,10 @@ impl AwsSqsClient {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum AwsCredentialsProvider {
     Static(StaticProvider),
-    File(AutoRefreshingProvider<ProfileProvider>),
+    Chain(AutoRefreshingProvider<ChainProvider>),
 }
 
 impl AwsCredentialsProvider {
@@ -785,15 +786,18 @@ impl AwsCredentialsProvider {
                 access_key_id,
                 secret_access_key,
             ))),
-            ConfigAwsAuth::File {
+            ConfigAwsAuth::Chain {
                 credentials_file,
                 profile,
-            } => Ok(Self::File(AutoRefreshingProvider::new(
-                ProfileProvider::with_configuration(
+            } => {
+                let profile_provider = ProfileProvider::with_configuration(
                     credentials_file,
                     profile.unwrap_or_else(|| "default".to_owned()),
-                ),
-            )?)),
+                );
+                Ok(Self::Chain(AutoRefreshingProvider::new(
+                    ChainProvider::with_profile_provider(profile_provider),
+                )?))
+            }
         }
     }
 }
@@ -803,7 +807,7 @@ impl ProvideAwsCredentials for AwsCredentialsProvider {
     async fn credentials(&self) -> Result<AwsCredentials, CredentialsError> {
         match self {
             Self::Static(p) => p.credentials(),
-            Self::File(p) => p.credentials(),
+            Self::Chain(p) => p.credentials(),
         }
         .await
     }
