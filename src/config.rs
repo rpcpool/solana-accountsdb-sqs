@@ -103,7 +103,7 @@ pub enum ConfigAwsAuth {
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct ConfigSlots {
-    pub messages: bool,
+    pub enabled: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -115,7 +115,7 @@ pub struct ConfigAccountsFilter {
 }
 
 impl<'de> Deserialize<'de> for ConfigAccountsFilter {
-    fn deserialize<D>(deserializer: D) -> Result<ConfigAccountsFilter, D::Error>
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -159,9 +159,50 @@ impl<'de> Deserialize<'de> for ConfigAccountsFilter {
     }
 }
 
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ConfigTransactionsFilter {
-    pub active: bool,
-    #[serde(default)]
+    pub enabled: bool,
     pub vote: bool,
+    pub accounts: ConfigTransactionsAccountsFilter,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ConfigTransactionsAccountsFilter {
+    pub include: HashSet<Pubkey>,
+    pub exclude: HashSet<Pubkey>,
+}
+
+impl<'de> Deserialize<'de> for ConfigTransactionsAccountsFilter {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Debug, Default, PartialEq, Eq, Deserialize)]
+        #[serde(default, deny_unknown_fields)]
+        struct ConfigTransactionsAccountsFilterRaw {
+            include: HashSet<String>,
+            exclude: HashSet<String>,
+        }
+
+        let raw: ConfigTransactionsAccountsFilterRaw = Deserialize::deserialize(deserializer)?;
+        if !raw.include.is_empty() && !raw.exclude.is_empty() {
+            return Err(de::Error::custom(
+                "`include` and `exlude` can not be used both at same moment",
+            ));
+        }
+
+        let mut filter = ConfigTransactionsAccountsFilter::default();
+
+        for pubkey in raw.include.into_iter() {
+            let pubkey = pubkey.parse().map_err(de::Error::custom)?;
+            filter.include.insert(pubkey);
+        }
+
+        for pubkey in raw.exclude.into_iter() {
+            let pubkey = pubkey.parse().map_err(de::Error::custom)?;
+            filter.exclude.insert(pubkey);
+        }
+
+        Ok(filter)
+    }
 }

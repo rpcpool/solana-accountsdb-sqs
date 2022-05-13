@@ -326,10 +326,11 @@ impl AwsSqsClient {
         let max_requests = config.sqs.max_requests;
         let commitment_level = config.sqs.commitment_level;
         let (client, queue_url) = Self::create_sqs(config.sqs)?;
-        let is_slot_messages_enabled = config.slots.messages;
+        let is_slot_messages_enabled = config.slots.enabled;
         let accounts_filter = AccountsFilter::new(config.accounts_filters);
-        log::info!("Sqs filters: {:#?}", accounts_filter);
+        log::info!("Sqs accounts filters: {:#?}", accounts_filter);
         let transactions_filter = TransactionsFilter::new(config.transactions_filter);
+        log::info!("Sqs transactions filter: {:#?}", transactions_filter);
 
         // Save required Tokenkeg Accounts
         let mut tokenkeg_owner_accounts: HashMap<Pubkey, ReplicaAccountInfo> = HashMap::new();

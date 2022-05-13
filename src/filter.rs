@@ -1,6 +1,8 @@
 use {
     super::{
-        config::{ConfigAccountsFilter, ConfigTransactionsFilter},
+        config::{
+            ConfigAccountsFilter, ConfigTransactionsAccountsFilter, ConfigTransactionsFilter,
+        },
         sqs::{ReplicaAccountInfo, ReplicaTransactionInfo},
     },
     solana_sdk::{program_pack::Pack, pubkey::Pubkey},
@@ -153,7 +155,7 @@ impl<'a> AccountsFilterMatch<'a> {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct TransactionsFilter {
     filter: ConfigTransactionsFilter,
 }
@@ -164,7 +166,7 @@ impl TransactionsFilter {
     }
 
     pub fn contains(&self, transaction: &ReplicaTransactionInfo) -> bool {
-        if !self.filter.active {
+        if !self.filter.enabled {
             return false;
         }
 
@@ -172,6 +174,26 @@ impl TransactionsFilter {
             return false;
         }
 
+        if !self.contains_program(transaction) {
+            return false;
+        }
+
+        true
+    }
+
+    fn contains_program(&self, transaction: &ReplicaTransactionInfo) -> bool {
+        let ConfigTransactionsAccountsFilter { include, exclude } = &self.filter.accounts;
+        let mut iter = transaction.transaction.message.account_keys.iter();
+
+        if !include.is_empty() {
+            return iter.any(|account_pubkey| include.contains(account_pubkey));
+        }
+
+        if !exclude.is_empty() {
+            return iter.all(|account_pubkey| !exclude.contains(account_pubkey));
+        }
+
+        // No filters means that any transaction is ok
         true
     }
 }

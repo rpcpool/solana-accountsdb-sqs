@@ -14,7 +14,7 @@
         }
     },
     "slots": {
-        "messages": false
+        "enabled": false
     },
     "accounts": {
         "me-80": {
@@ -27,7 +27,11 @@
         }
     },
     "transactions": {
-        "active": true,
-        "vote": true
+        "enabled": true,
+        "vote": false,
+        "accounts": {
+            "include": [],
+            "exclude": []
+        }
     }
 }
