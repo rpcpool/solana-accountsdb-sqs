@@ -790,10 +790,16 @@ impl AwsCredentialsProvider {
                 credentials_file,
                 profile,
             } => {
-                let profile_provider = ProfileProvider::with_configuration(
-                    credentials_file,
-                    profile.unwrap_or_else(|| "default".to_owned()),
-                );
+                let profile_provider = match (credentials_file, profile) {
+                    (Some(file_path), Some(profile)) => {
+                        ProfileProvider::with_configuration(file_path, profile)
+                    }
+                    (Some(file_path), None) => {
+                        ProfileProvider::with_default_configuration(file_path)
+                    }
+                    (None, Some(profile)) => ProfileProvider::with_default_credentials(profile)?,
+                    (None, None) => ProfileProvider::new()?,
+                };
                 Ok(Self::Chain(AutoRefreshingProvider::new(
                     ChainProvider::with_profile_provider(profile_provider),
                 )?))

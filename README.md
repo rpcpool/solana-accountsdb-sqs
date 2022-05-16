@@ -53,7 +53,7 @@ https://docs.rs/rusoto_credential/latest/rusoto_credential/struct.StaticProvider
 }
 ```
 
-`profile` field is optional, default value is `default`.
+`credentials_file` and `profile` fields are optional.
 
 https://docs.rs/rusoto_credential/latest/rusoto_credential/struct.ChainProvider.html
 
