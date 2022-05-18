@@ -30,7 +30,9 @@
         "enabled": true,
         "vote": false,
         "accounts": {
-            "include": [],
+            "include": [
+                "MEisE1HzehtrDpAAT8PnLHjpSSkRYakotTuJRPjTpo8", "M2mx93ekt1fmXSVkTrUL9xVFHkmME8HTUi5Cyc5aF7K"
+            ],
             "exclude": []
         }
     }
