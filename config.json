@@ -4,7 +4,7 @@
         "level": "info"
     },
     "sqs": {
-        "url": "https://sqs.us-west-2.amazonaws.com/899202692022/solana-block-updates",
+        "url": "https://sqs.us-west-2.amazonaws.com/899202692022/solana-geyser",
         "region": "us-west-2",
         "commitment_level": "confirmed",
         "max_requests": 10000,
