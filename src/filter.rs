@@ -174,6 +174,10 @@ impl TransactionsFilter {
             return false;
         }
 
+        if transaction.meta.err.is_some() && !self.filter.failed {
+            return false;
+        }
+
         if !self.contains_program(transaction) {
             return false;
         }

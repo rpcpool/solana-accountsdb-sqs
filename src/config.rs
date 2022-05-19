@@ -163,6 +163,7 @@ impl<'de> Deserialize<'de> for ConfigAccountsFilter {
 pub struct ConfigTransactionsFilter {
     pub enabled: bool,
     pub vote: bool,
+    pub failed: bool,
     pub accounts: ConfigTransactionsAccountsFilter,
 }
 

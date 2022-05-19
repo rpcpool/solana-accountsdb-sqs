@@ -100,13 +100,16 @@ Filter accounts with size 256:
 
 ### Transaction filters
 
-Currently only one filter exists: `vote`.
-
 ```json
 {
     "transactions": {
-        "active": true,
-        "vote": false
+        "enabled": true,
+        "vote": false,
+        "failed": false,
+        "accounts": {
+            "include": [],
+            "exclude": []
+        }
     }
 }
 ```

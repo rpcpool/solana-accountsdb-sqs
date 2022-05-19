@@ -25,6 +25,7 @@
     "transactions": {
         "enabled": true,
         "vote": false,
+        "failed": false,
         "accounts": {
             "include": [],
             "exclude": []
