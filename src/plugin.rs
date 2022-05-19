@@ -3,7 +3,7 @@ use crate::sqs::SqsClientResult;
 use {
     crate::{config::Config, sqs::AwsSqsClient},
     solana_geyser_plugin_interface::geyser_plugin_interface::{
-        GeyserPlugin, GeyserPluginError, ReplicaAccountInfoVersions,
+        GeyserPlugin, GeyserPluginError, ReplicaAccountInfoVersions, ReplicaBlockInfoVersions,
         ReplicaTransactionInfoVersions, Result as PluginResult, SlotStatus,
     },
 };
@@ -78,6 +78,10 @@ impl GeyserPlugin for Plugin {
         slot: u64,
     ) -> PluginResult<()> {
         self.with_sqs(|sqs| sqs.notify_transaction(transaction, slot))
+    }
+
+    fn notify_block_metadata(&mut self, blockinfo: ReplicaBlockInfoVersions) -> PluginResult<()> {
+        self.with_sqs(|sqs| sqs.notify_block_metadata(blockinfo))
     }
 
     fn transaction_notifications_enabled(&self) -> bool {

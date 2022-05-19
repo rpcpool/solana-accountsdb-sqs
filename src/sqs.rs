@@ -20,10 +20,12 @@ use {
     serde::{Deserialize, Serialize},
     serde_json::json,
     solana_geyser_plugin_interface::geyser_plugin_interface::{
-        ReplicaAccountInfoVersions, ReplicaTransactionInfoVersions, SlotStatus as GeyserSlotStatus,
+        ReplicaAccountInfoVersions, ReplicaBlockInfoVersions, ReplicaTransactionInfoVersions,
+        SlotStatus as GeyserSlotStatus,
     },
     solana_sdk::{
-        message::SanitizedMessage,
+        clock::UnixTimestamp,
+        message::Message as TransactionMessage,
         program_pack::Pack,
         pubkey::{Pubkey, PUBKEY_BYTES},
         signature::Signature,
@@ -146,44 +148,32 @@ pub struct ReplicaTransactionInfo {
     pub transaction: Transaction,
     pub meta: UiTransactionStatusMeta,
     pub slot: u64,
+    pub block_time: Option<UnixTimestamp>,
 }
 
-impl ReplicaTransactionInfo {
-    pub fn new(transaction: ReplicaTransactionInfoVersions, slot: u64) -> Option<Self> {
-        match transaction {
-            ReplicaTransactionInfoVersions::V0_0_1(transaction) => {
-                match transaction.transaction.message() {
-                    SanitizedMessage::Legacy(message) => Some(Self {
-                        signature: *transaction.signature,
-                        is_vote: transaction.is_vote,
-                        transaction: Transaction {
-                            signatures: transaction.transaction.signatures().into(),
-                            message: message.clone(),
-                        },
-                        meta: transaction.transaction_status_meta.clone().into(),
-                        slot,
-                    }),
-                    SanitizedMessage::V0(_) => None,
-                }
-            }
-        }
-    }
+#[derive(Debug)]
+pub struct ReplicaBlockMetadata {
+    pub slot: u64,
+    pub block_time: Option<UnixTimestamp>,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 enum Message {
     UpdateSlot((SlotStatus, u64)),
     UpdateAccount(ReplicaAccountInfo),
-    NotifyTransaction(Box<ReplicaTransactionInfo>),
+    NotifyTransaction(ReplicaTransactionInfo),
+    NotifyBlockMetadata(ReplicaBlockMetadata),
     StartupFinished,
     Shutdown,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 enum SendMessage {
     Slot((SlotStatus, u64)),
     Account((ReplicaAccountInfo, Vec<String>)),
-    Transaction(Box<ReplicaTransactionInfo>),
+    Transaction(ReplicaTransactionInfo),
 }
 
 #[derive(Debug, Error)]
@@ -311,10 +301,32 @@ impl AwsSqsClient {
         transaction: ReplicaTransactionInfoVersions,
         slot: u64,
     ) -> SqsClientResult {
-        match ReplicaTransactionInfo::new(transaction, slot) {
-            Some(info) => self.send_message(Message::NotifyTransaction(Box::new(info))),
-            None => Ok(()),
-        }
+        let ReplicaTransactionInfoVersions::V0_0_1(transaction) = transaction;
+        let message = transaction.transaction.message();
+        self.send_message(Message::NotifyTransaction(ReplicaTransactionInfo {
+            signature: *transaction.signature,
+            is_vote: transaction.is_vote,
+            transaction: Transaction {
+                signatures: transaction.transaction.signatures().into(),
+                message: TransactionMessage {
+                    header: message.header().clone(),
+                    account_keys: message.account_keys_iter().cloned().collect(),
+                    recent_blockhash: *message.recent_blockhash(),
+                    instructions: message.instructions().to_vec(),
+                },
+            },
+            meta: transaction.transaction_status_meta.clone().into(),
+            slot,
+            block_time: None,
+        }))
+    }
+
+    pub fn notify_block_metadata(&self, blockinfo: ReplicaBlockInfoVersions) -> SqsClientResult {
+        let ReplicaBlockInfoVersions::V0_0_1(info) = blockinfo;
+        self.send_message(Message::NotifyBlockMetadata(ReplicaBlockMetadata {
+            slot: info.slot,
+            block_time: info.block_time,
+        }))
     }
 
     async fn send_loop(
@@ -354,6 +366,7 @@ impl AwsSqsClient {
                     }
                 }
                 Message::NotifyTransaction(_) => unreachable!(),
+                Message::NotifyBlockMetadata(_) => unreachable!(),
                 Message::StartupFinished => {
                     startup_job.store(false, Ordering::Relaxed);
                     break;
@@ -429,7 +442,8 @@ impl AwsSqsClient {
         type TokenkegHist = BTreeMap<u64, HashMap<Pubkey, Option<ReplicaAccountInfo>>>;
         let mut tokenkeg_owner_accounts_hist: TokenkegHist = BTreeMap::new();
         let mut tokenkeg_delegate_accounts_hist: TokenkegHist = BTreeMap::new();
-        let mut transactions: BTreeMap<u64, Vec<Box<ReplicaTransactionInfo>>> = BTreeMap::new();
+        let mut transactions: BTreeMap<u64, Vec<ReplicaTransactionInfo>> = BTreeMap::new();
+        let mut blocks: BTreeMap<u64, ReplicaBlockMetadata> = BTreeMap::new();
 
         // Remove outdated slots from `BTreeMap<u64, T>` (accounts, tokenkeg history)
         fn remove_outdated_slots<T>(map: &mut BTreeMap<u64, T>, min_slot: u64) {
@@ -451,7 +465,7 @@ impl AwsSqsClient {
             tokenkeg_delegate_accounts: &mut HashMap<Pubkey, ReplicaAccountInfo>,
             tokenkeg_owner_accounts_hist: &mut HashMap<Pubkey, Option<ReplicaAccountInfo>>,
             tokenkeg_delegate_accounts_hist: &mut HashMap<Pubkey, Option<ReplicaAccountInfo>>,
-            transactions: &[Box<ReplicaTransactionInfo>],
+            transactions: &[ReplicaTransactionInfo],
             transactions_filter: &TransactionsFilter,
         ) {
             for account in accounts {
@@ -613,6 +627,7 @@ impl AwsSqsClient {
                                 remove_outdated_slots(&mut tokenkeg_owner_accounts_hist, min_slot);
                                 remove_outdated_slots(&mut tokenkeg_delegate_accounts_hist, min_slot);
                                 remove_outdated_slots(&mut transactions, min_slot);
+                                remove_outdated_slots(&mut blocks, min_slot);
                             }
 
                             // Handle reorg
@@ -625,8 +640,12 @@ impl AwsSqsClient {
                                 }
                             }
 
-                            match (accounts.get(&slot), transactions.get(&slot)) {
-                                (Some(accounts), Some(transactions)) => {
+                            match (accounts.get(&slot), transactions.get_mut(&slot), blocks.get(&slot)) {
+                                (Some(accounts), Some(transactions), Some(block)) => {
+                                    for transaction in transactions.iter_mut() {
+                                        transaction.block_time = block.block_time;
+                                    }
+
                                     let size = messages.len();
                                     generate_messages(
                                         &mut messages,
@@ -641,8 +660,8 @@ impl AwsSqsClient {
                                     );
                                     let _ = stats_queued_tx.send(messages.len() - size);
                                 }
-                                (_, _) => error!(
-                                    "send_loop error: accounts/transactions for slot {} does not exists",
+                                _ => error!(
+                                    "send_loop error: accounts/transactions/block for slot {} does not exists",
                                     slot
                                 ),
                             }
@@ -667,6 +686,9 @@ impl AwsSqsClient {
                         }
 
                         transactions.get_mut(&transaction.slot).unwrap().push(transaction);
+                    }
+                    Some(Message::NotifyBlockMetadata(block)) => {
+                        blocks.insert(block.slot, block);
                     }
                     Some(Message::StartupFinished) => unreachable!(),
                     Some(Message::Shutdown) | None => break,
@@ -717,6 +739,7 @@ impl AwsSqsClient {
                         "transaction": base64::encode(&bincode::serialize(&transaction.transaction).unwrap()),
                         "meta": transaction.meta,
                         "slot": transaction.slot,
+                        "block_time": transaction.block_time.unwrap_or_default(),
                     }),
                 }
                 .to_string(),
