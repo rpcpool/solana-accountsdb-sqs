@@ -1,32 +1,38 @@
 {
-    "libpath": "/home/kirill/projects/solana-accountsdb-sqs/target/debug/libsolana_accountsdb_sqs.so",
+    "libpath": "libsolana_geyser_sqs.so",
     "log": {
         "level": "info"
     },
     "sqs": {
-        "commitment_level": "finalized",
         "url": "https://sqs.us-east-2.amazonaws.com/<account_id>/<accounts_queue>",
         "region": "us-east-2",
+        "commitment_level": "finalized",
+        "max_requests": 10000,
         "auth": {
-            "credentials_file": "/home/solana/.aws/credentials",
-            "profile": "rpcpool"
-        },
-        "max_requests": 10000
+          "access_key_id": "access_key_id",
+          "secret_access_key": "secret_access_key"
+        }
     },
     "slots": {
-        "messages": true
+        "enabled": false
     },
-    "filters": [{
-        "owner": "AAACCCDDDEee"
-    }, {
-        "owner": "GUnde212311?",
-        "data_size": 80
-    }, {
-        "tokenkeg_owner": [
-            "ABCDef"
-        ],
-        "tokenkeg_delegate": [
-            "AAAeeennnddd"
-        ]
-    }]
+    "accounts": {
+        "owner-and-size": {
+            "owner": ["AAACCCDDDEee"],
+            "data_size": [80]
+        },
+        "tokenkeg-owner-and-size": {
+            "tokenkeg_owner": ["GUnde212311"],
+            "data_size": [165]
+        }
+    },
+    "transactions": {
+        "enabled": true,
+        "vote": false,
+        "failed": false,
+        "accounts": {
+            "include": [],
+            "exclude": []
+        }
+    }
 }

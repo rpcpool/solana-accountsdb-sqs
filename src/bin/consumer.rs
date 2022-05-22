@@ -1,26 +1,41 @@
 use {
     anyhow::Result,
-    clap::{crate_name, App, Arg},
+    clap::{crate_name, Arg, Command},
     humantime::format_rfc3339_millis,
     rusoto_sqs::{
         DeleteMessageBatchRequest, DeleteMessageBatchRequestEntry, ReceiveMessageRequest,
         ReceiveMessageResult, Sqs,
     },
-    solana_accountsdb_sqs::{config::Config, sqs::AwsSqsClient},
+    serde::Deserialize,
+    solana_geyser_sqs::{config::Config, sqs::AwsSqsClient},
     std::time::SystemTime,
     tokio::time::{sleep, Duration},
 };
 
+#[derive(Debug, Deserialize)]
+struct Message<'a> {
+    pub pubkey: &'a str,
+    pub owner: &'a str,
+    pub filters: Vec<&'a str>,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = App::new(crate_name!())
+    let args = Command::new(crate_name!())
         .arg(
-            Arg::with_name("config")
-                .help("Path to accountsdb plugin config")
+            Arg::new("config")
+                .help("Path to geyser plugin config")
                 .long("config")
-                .short("c")
+                .short('c')
                 .required(true)
                 .takes_value(true),
+        )
+        .arg(
+            Arg::new("details")
+                .help("Print full messages")
+                .long("details")
+                .short('d')
+                .takes_value(false),
         )
         .get_matches();
 
@@ -60,7 +75,23 @@ async fn main() -> Result<()> {
             Ok(ReceiveMessageResult {
                 messages: Some(messages),
             }) => {
-                println!("{} | messages: {:?}", now, messages);
+                if args.is_present("details") {
+                    println!("{} | messages: {:?}", now, messages);
+                } else {
+                    let messages = messages
+                        .iter()
+                        .filter_map(|message| {
+                            message.body.as_ref().map(|body| {
+                                let msg = serde_json::from_str::<Message>(body).unwrap();
+                                format!(
+                                    "{} (owner: {}) => {:?}",
+                                    msg.pubkey, msg.owner, msg.filters
+                                )
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    println!("{} | messages: [{}]", now, messages.join(", "));
+                }
                 let entries = messages
                     .into_iter()
                     .enumerate()
