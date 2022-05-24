@@ -2309,6 +2309,7 @@ dependencies = [
  "bincode",
  "clap",
  "derivative",
+ "flate2",
  "futures",
  "humantime",
  "hyper",
@@ -2327,6 +2328,7 @@ dependencies = [
  "spl-token",
  "thiserror",
  "tokio",
+ "zstd",
 ]
 
 [[package]]

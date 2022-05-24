@@ -15,6 +15,7 @@ base64 = "0.13.0"
 bincode = "1.3"
 clap = { version = "3.1.8", features = ["cargo"] }
 derivative = "2"
+flate2 = "1"
 futures = "0.3"
 humantime = "2.1.0"
 hyper = { version = "0.14", features = ["server"] }
@@ -33,6 +34,7 @@ solana-transaction-status = "=1.9.22"
 spl-token = "3.2.0"
 thiserror = "1.0.30"
 tokio = { version = "1.15.0", features = ["rt-multi-thread", "time", "macros"] }
+zstd = "0.9"
 
 [profile.release]
 codegen-units = 1

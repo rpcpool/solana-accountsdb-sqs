@@ -1,5 +1,6 @@
 use {
     super::sqs::SlotStatus,
+    flate2::{write::GzEncoder, Compression as GzCompression},
     rusoto_core::Region,
     serde::{de, Deserialize, Deserializer},
     solana_geyser_plugin_interface::geyser_plugin_interface::{
@@ -7,8 +8,10 @@ use {
     },
     solana_sdk::pubkey::Pubkey,
     std::{
+        borrow::Cow,
         collections::{HashMap, HashSet},
         fs::read_to_string,
+        io::{Result as IoResult, Write},
         net::SocketAddr,
         path::Path,
     },
@@ -82,6 +85,8 @@ pub struct ConfigAwsSqs {
     pub max_requests: usize,
     #[serde(default, deserialize_with = "deserialize_commitment_level")]
     pub commitment_level: SlotStatus,
+    #[serde(default)]
+    pub account_data_compression: AccountDataCompression,
 }
 
 fn deserialize_region<'de, D>(deserializer: D) -> Result<Region, D::Error>
@@ -111,6 +116,43 @@ where
             "`commitment_level` as `processed` is not supported",
         )),
         value => Ok(value),
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, derivative::Derivative)]
+#[derivative(Default)]
+#[serde(deny_unknown_fields, rename_all = "lowercase", tag = "algo")]
+pub enum AccountDataCompression {
+    #[derivative(Default)]
+    None,
+    Zstd {
+        #[serde(default)]
+        level: i32,
+    },
+    Gzip {
+        #[serde(default = "AccountDataCompression::gzip_default_level")]
+        level: u32,
+    },
+}
+
+impl AccountDataCompression {
+    #[allow(clippy::ptr_arg)]
+    pub fn compress<'a>(&self, data: &'a Vec<u8>) -> IoResult<Cow<'a, Vec<u8>>> {
+        Ok(match self {
+            AccountDataCompression::None => Cow::Borrowed(data),
+            AccountDataCompression::Zstd { level } => {
+                Cow::Owned(zstd::stream::encode_all::<&[u8]>(data.as_ref(), *level)?)
+            }
+            AccountDataCompression::Gzip { level } => {
+                let mut encoder = GzEncoder::new(Vec::new(), GzCompression::new(*level));
+                encoder.write_all(data)?;
+                Cow::Owned(encoder.finish()?)
+            }
+        })
+    }
+
+    fn gzip_default_level() -> u32 {
+        GzCompression::default().level()
     }
 }
 

@@ -14,7 +14,8 @@
         "region": "us-west-2",
         "url": "https://sqs.us-west-2.amazonaws.com/899202692022/solana-geyser",
         "max_requests": 10000,
-        "commitment_level": "confirmed"
+        "commitment_level": "confirmed",
+        "accounts_data_compression": {"algo": "none"}
     },
     "slots": {
         "enabled": false

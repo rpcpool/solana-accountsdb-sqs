@@ -1,6 +1,6 @@
 use {
     super::{
-        config::{Config, ConfigAwsAuth, ConfigAwsSqs},
+        config::{AccountDataCompression, Config, ConfigAwsAuth, ConfigAwsSqs},
         filter::{AccountsFilter, TransactionsFilter},
         prom::{UploadTotalStatus, UPLOAD_QUEUE_SIZE, UPLOAD_REQUESTS, UPLOAD_TOTAL},
     },
@@ -36,6 +36,7 @@ use {
     std::{
         collections::{BTreeMap, BTreeSet, HashMap, LinkedList},
         convert::TryInto,
+        io::Result as IoResult,
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc,
@@ -176,8 +177,8 @@ enum SendMessage {
 }
 
 impl SendMessage {
-    fn payload(&self) -> String {
-        match self {
+    fn payload(&self, compression: &AccountDataCompression) -> IoResult<String> {
+        Ok(match self {
             SendMessage::Slot((status, slot)) => json!({
                 "type": "slot",
                 "status": status,
@@ -191,7 +192,7 @@ impl SendMessage {
                 "owner": account.owner.to_string(),
                 "executable": account.executable,
                 "rent_epoch": account.rent_epoch,
-                "data": base64::encode(&account.data),
+                "data": base64::encode(compression.compress(&account.data)?.as_ref()),
                 "write_version": account.write_version,
                 "slot": account.slot,
             }),
@@ -204,7 +205,7 @@ impl SendMessage {
                 "block_time": transaction.block_time.unwrap_or_default(),
             }),
         }
-        .to_string()
+        .to_string())
     }
 }
 
@@ -363,6 +364,7 @@ impl AwsSqsClient {
     ) -> SqsClientResult {
         let max_requests = config.sqs.max_requests;
         let commitment_level = config.sqs.commitment_level;
+        let account_data_compression = config.sqs.account_data_compression;
         let (client, queue_url) = Self::create_sqs(config.sqs)?;
         let is_slot_messages_enabled = config.slots.enabled;
         let accounts_filter = AccountsFilter::new(config.accounts_filters);
@@ -415,10 +417,23 @@ impl AwsSqsClient {
         let mut blocks: BTreeMap<u64, ReplicaBlockMetadata> = BTreeMap::new();
 
         // Add message to the tail and increase counter
-        fn add_message(messages: &mut LinkedList<SendMessageWithPayload>, message: SendMessage) {
-            let payload = message.payload();
-            messages.push_back(SendMessageWithPayload { message, payload });
-            UPLOAD_QUEUE_SIZE.inc();
+        fn add_message(
+            messages: &mut LinkedList<SendMessageWithPayload>,
+            message: SendMessage,
+            account_data_compression: &AccountDataCompression,
+        ) {
+            match message.payload(account_data_compression) {
+                Ok(payload) => {
+                    messages.push_back(SendMessageWithPayload { message, payload });
+                    UPLOAD_QUEUE_SIZE.inc();
+                }
+                Err(error) => {
+                    error!("failed to create payload: {:?}", error);
+                    UPLOAD_TOTAL
+                        .with_label_values(&[UploadTotalStatus::Dropped.as_str()])
+                        .inc();
+                }
+            }
         }
 
         // Remove outdated slots from `BTreeMap<u64, T>` (accounts, tokenkeg history)
@@ -443,6 +458,7 @@ impl AwsSqsClient {
             tokenkeg_delegate_accounts_hist: &mut HashMap<Pubkey, Option<ReplicaAccountInfo>>,
             transactions: &[ReplicaTransactionInfo],
             transactions_filter: &TransactionsFilter,
+            account_data_compression: &AccountDataCompression,
         ) {
             for account in accounts {
                 let mut filters = accounts_filter.create_match();
@@ -525,13 +541,21 @@ impl AwsSqsClient {
 
                 let filters = filters.get_filters();
                 if !filters.is_empty() {
-                    add_message(messages, SendMessage::Account((account.clone(), filters)));
+                    add_message(
+                        messages,
+                        SendMessage::Account((account.clone(), filters)),
+                        account_data_compression,
+                    );
                 }
             }
 
             for transaction in transactions {
                 if transactions_filter.contains(transaction) {
-                    add_message(messages, SendMessage::Transaction(transaction.clone()));
+                    add_message(
+                        messages,
+                        SendMessage::Transaction(transaction.clone()),
+                        account_data_compression,
+                    );
                 }
             }
         }
@@ -626,7 +650,7 @@ impl AwsSqsClient {
                 message = rx.recv() => match message {
                     Some(Message::UpdateSlot((status, slot))) => {
                         if is_slot_messages_enabled {
-                            add_message(&mut messages, SendMessage::Slot((status, slot)));
+                            add_message(&mut messages, SendMessage::Slot((status, slot)), &account_data_compression);
                         }
 
                         if status == commitment_level {
@@ -670,6 +694,7 @@ impl AwsSqsClient {
                                         tokenkeg_delegate_accounts_hist.entry(slot).or_default(),
                                         transactions,
                                         &transactions_filter,
+                                        &account_data_compression
                                     );
                                 }
                                 _ => error!(
