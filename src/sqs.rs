@@ -2,11 +2,11 @@ use {
     super::{
         config::{Config, ConfigAwsAuth, ConfigAwsSqs},
         filter::{AccountsFilter, TransactionsFilter},
+        prom::{UploadTotalStatus, UPLOAD_QUEUE_SIZE, UPLOAD_REQUESTS, UPLOAD_TOTAL},
     },
     arrayref::array_ref,
     async_trait::async_trait,
     futures::future::FutureExt,
-    humantime::format_duration,
     log::*,
     rusoto_core::{HttpClient, RusotoError},
     rusoto_credential::{
@@ -41,11 +41,10 @@ use {
             Arc,
         },
         thread::sleep,
-        time::{Duration, Instant},
+        time::Duration,
     },
     thiserror::Error,
     tokio::{
-        runtime::Runtime,
         sync::{mpsc, Semaphore},
         time::sleep as sleep_async,
     },
@@ -215,19 +214,10 @@ struct SendMessageWithPayload {
     payload: String,
 }
 
-impl From<SendMessage> for SendMessageWithPayload {
-    fn from(message: SendMessage) -> Self {
-        let payload = message.payload();
-        Self { message, payload }
-    }
-}
-
 #[derive(Debug, Error)]
 pub enum SqsClientError {
     #[error("invalid commitment_level: {0:?}")]
     InvalidCommitmentLevel(SlotStatus),
-    #[error("failed to create Runtime: {0}")]
-    RuntimeCreate(std::io::Error),
     #[error("aws credential error: {0}")]
     AwsCredentials(#[from] CredentialsError),
     #[error("HttpClient error: {0}")]
@@ -246,14 +236,13 @@ pub type SqsClientResult<T = ()> = Result<T, SqsClientError>;
 
 #[derive(Debug)]
 pub struct AwsSqsClient {
-    runtime: Runtime,
     send_queue: mpsc::UnboundedSender<Message>,
     startup_job: Arc<AtomicBool>,
     send_job: Arc<AtomicBool>,
 }
 
 impl AwsSqsClient {
-    pub fn new(config: Config) -> SqsClientResult<Self> {
+    pub async fn new(config: Config) -> SqsClientResult<Self> {
         if !matches!(
             config.sqs.commitment_level,
             SlotStatus::Confirmed | SlotStatus::Finalized
@@ -267,31 +256,24 @@ impl AwsSqsClient {
         let startup_job_loop = Arc::clone(&startup_job);
         let send_job = Arc::new(AtomicBool::new(true));
         let send_job_loop = Arc::clone(&send_job);
-        let runtime = Runtime::new().map_err(SqsClientError::RuntimeCreate)?;
-        let send_queue = runtime.block_on(async move {
-            // Check that SQS is available
-            let (client, queue_url) = Self::create_sqs(config.sqs.clone())?;
-            client
-                .get_queue_attributes(GetQueueAttributesRequest {
-                    attribute_names: None,
-                    queue_url: queue_url.clone(),
-                })
-                .await?;
 
-            let (tx, rx) = mpsc::unbounded_channel();
-            tokio::spawn(async move {
-                if let Err(error) =
-                    Self::send_loop(config, rx, startup_job_loop, send_job_loop).await
-                {
-                    error!("update_loop failed: {:?}", error);
-                }
-            });
+        // Check that SQS is available
+        let (client, queue_url) = Self::create_sqs(config.sqs.clone())?;
+        client
+            .get_queue_attributes(GetQueueAttributesRequest {
+                attribute_names: None,
+                queue_url: queue_url.clone(),
+            })
+            .await?;
 
-            Ok::<_, SqsClientError>(tx)
-        })?;
+        let (send_queue, rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            if let Err(error) = Self::send_loop(config, rx, startup_job_loop, send_job_loop).await {
+                error!("update_loop failed: {:?}", error);
+            }
+        });
 
         Ok(Self {
-            runtime,
             send_queue,
             startup_job,
             send_job,
@@ -312,14 +294,12 @@ impl AwsSqsClient {
             .map_err(|_| SqsClientError::UpdateQueueChannelClosed)
     }
 
-    pub fn shutdown(self) {
+    pub async fn shutdown(self) {
         if self.send_message(Message::Shutdown).is_ok() {
             while self.send_job.load(Ordering::Relaxed) {
-                sleep(Duration::from_micros(10));
+                sleep_async(Duration::from_micros(10)).await;
             }
         }
-
-        self.runtime.shutdown_timeout(Duration::from_secs(10));
     }
 
     pub fn startup_finished(&self) -> SqsClientResult {
@@ -425,63 +405,6 @@ impl AwsSqsClient {
         }
         info!("startup finished");
 
-        // Spawn simple stats
-        let send_job_stats = Arc::clone(&send_job);
-        let (stats_queued_tx, mut stats_queued_rx) = mpsc::unbounded_channel();
-        let (stats_inprocess_tx, mut stats_inprocess_rx) = mpsc::unbounded_channel();
-        let (stats_processed_tx, mut stats_processed_rx) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            let mut last_update = Instant::now();
-            let mut queued = 0;
-            let mut inprocess = 0;
-            let mut processed = 0;
-            let mut processed_time = Duration::from_secs(0);
-            loop {
-                if !send_job_stats.load(Ordering::Relaxed) {
-                    break;
-                }
-
-                while let Ok(count) = stats_queued_rx.try_recv() {
-                    queued += count;
-                }
-                while let Ok(count) = stats_inprocess_rx.try_recv() {
-                    queued -= count;
-                    inprocess += count;
-                }
-                while let Ok((count, elapsed)) = stats_processed_rx.try_recv() {
-                    inprocess -= count;
-                    processed += count;
-                    processed_time += elapsed * count as u32;
-                }
-
-                if last_update.elapsed() < Duration::from_secs(10) {
-                    sleep_async(Duration::from_micros(1_000)).await;
-                    continue;
-                }
-
-                log!(
-                    if inprocess > 200 {
-                        Level::Warn
-                    } else {
-                        Level::Info
-                    },
-                    "queued: {}, in process: {}, processed: {}, avg processing time: {}",
-                    queued,
-                    inprocess,
-                    processed,
-                    format_duration(
-                        processed_time
-                            .checked_div(processed as u32)
-                            .unwrap_or_default()
-                    )
-                );
-
-                last_update = Instant::now();
-                processed = 0;
-                processed_time = Duration::from_secs(0);
-            }
-        });
-
         // Messages, accounts and tokenkeg history changes
         let mut messages: LinkedList<SendMessageWithPayload> = LinkedList::new();
         let mut accounts: BTreeMap<u64, BTreeSet<ReplicaAccountInfo>> = BTreeMap::new();
@@ -490,6 +413,13 @@ impl AwsSqsClient {
         let mut tokenkeg_delegate_accounts_hist: TokenkegHist = BTreeMap::new();
         let mut transactions: BTreeMap<u64, Vec<ReplicaTransactionInfo>> = BTreeMap::new();
         let mut blocks: BTreeMap<u64, ReplicaBlockMetadata> = BTreeMap::new();
+
+        // Add message to the tail and increase counter
+        fn add_message(messages: &mut LinkedList<SendMessageWithPayload>, message: SendMessage) {
+            let payload = message.payload();
+            messages.push_back(SendMessageWithPayload { message, payload });
+            UPLOAD_QUEUE_SIZE.inc();
+        }
 
         // Remove outdated slots from `BTreeMap<u64, T>` (accounts, tokenkeg history)
         fn remove_outdated_slots<T>(map: &mut BTreeMap<u64, T>, min_slot: u64) {
@@ -595,13 +525,13 @@ impl AwsSqsClient {
 
                 let filters = filters.get_filters();
                 if !filters.is_empty() {
-                    messages.push_back(SendMessage::Account((account.clone(), filters)).into());
+                    add_message(messages, SendMessage::Account((account.clone(), filters)));
                 }
             }
 
             for transaction in transactions {
                 if transactions_filter.contains(transaction) {
-                    messages.push_back(SendMessage::Transaction(transaction.clone()).into())
+                    add_message(messages, SendMessage::Transaction(transaction.clone()));
                 }
             }
         }
@@ -647,6 +577,10 @@ impl AwsSqsClient {
                                     message => format!("{:?}", message),
                                 };
                                 error!("drop message because payload is too large: {}", kind);
+                                UPLOAD_QUEUE_SIZE.dec();
+                                UPLOAD_TOTAL
+                                    .with_label_values(&[UploadTotalStatus::Dropped.as_str()])
+                                    .inc();
                             } else {
                                 messages.push_front(message);
                             }
@@ -655,22 +589,26 @@ impl AwsSqsClient {
                         None => break,
                     };
                 }
-                if !messages_batch.is_empty() {
-                    let messages_count = messages_batch.len();
-                    let _ = stats_inprocess_tx.send(messages_count);
+                let messages_count = messages_batch.len();
+                if messages_count != 0 {
+                    UPLOAD_QUEUE_SIZE.sub(messages_count as i64);
                     let client = client.clone();
                     let queue_url = queue_url.clone();
-                    let stats_processed_tx = stats_processed_tx.clone();
                     let send_jobs = Arc::clone(&send_jobs);
                     let send_permit = send_jobs.try_acquire_owned().expect("available permit");
                     tokio::spawn(async move {
-                        let ts = Instant::now();
-                        if let Err(error) =
-                            Self::send_messages(client, queue_url, messages_batch).await
-                        {
-                            error!("failed to send data: {:?}", error);
-                        }
-                        let _ = stats_processed_tx.send((messages_count, ts.elapsed()));
+                        UPLOAD_REQUESTS.inc();
+                        let status =
+                            match Self::send_messages(client, queue_url, messages_batch).await {
+                                Ok(()) => UploadTotalStatus::Success,
+                                Err(error) => {
+                                    error!("failed to send data: {:?}", error);
+                                    UploadTotalStatus::Failed
+                                }
+                            };
+                        UPLOAD_TOTAL.with_label_values(&[status.as_str()]).inc();
+                        UPLOAD_REQUESTS.dec();
+
                         drop(send_permit);
                     });
                 }
@@ -688,8 +626,7 @@ impl AwsSqsClient {
                 message = rx.recv() => match message {
                     Some(Message::UpdateSlot((status, slot))) => {
                         if is_slot_messages_enabled {
-                            messages.push_back(SendMessage::Slot((status, slot)).into());
-                            let _ = stats_queued_tx.send(1);
+                            add_message(&mut messages, SendMessage::Slot((status, slot)));
                         }
 
                         if status == commitment_level {
@@ -723,7 +660,6 @@ impl AwsSqsClient {
                                         transaction.block_time = block.block_time;
                                     }
 
-                                    let size = messages.len();
                                     generate_messages(
                                         &mut messages,
                                         accounts,
@@ -735,7 +671,6 @@ impl AwsSqsClient {
                                         transactions,
                                         &transactions_filter,
                                     );
-                                    let _ = stats_queued_tx.send(messages.len() - size);
                                 }
                                 _ => error!(
                                     "send_loop error: accounts/transactions/block for slot {} does not exists",

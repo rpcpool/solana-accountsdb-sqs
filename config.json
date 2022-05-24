@@ -3,15 +3,18 @@
     "log": {
         "level": "info"
     },
+    "prometheus": {
+        "address": "0.0.0.0:8999"
+    },
     "sqs": {
-        "url": "https://sqs.us-west-2.amazonaws.com/899202692022/solana-geyser",
-        "region": "us-west-2",
-        "commitment_level": "confirmed",
-        "max_requests": 10000,
         "auth": {
           "access_key_id": "access_key_id",
           "secret_access_key": "secret_access_key"
-        }
+        },
+        "region": "us-west-2",
+        "url": "https://sqs.us-west-2.amazonaws.com/899202692022/solana-geyser",
+        "max_requests": 10000,
+        "commitment_level": "confirmed"
     },
     "slots": {
         "enabled": false

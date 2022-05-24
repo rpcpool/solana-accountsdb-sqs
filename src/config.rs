@@ -9,6 +9,7 @@ use {
     std::{
         collections::{HashMap, HashSet},
         fs::read_to_string,
+        net::SocketAddr,
         path::Path,
     },
 };
@@ -17,7 +18,9 @@ use {
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub libpath: String,
+    #[serde(default)]
     pub log: ConfigLog,
+    pub prometheus: Option<ConfigPrometheus>,
     pub sqs: ConfigAwsSqs,
     pub slots: ConfigSlots,
     #[serde(rename = "accounts")]
@@ -42,32 +45,43 @@ impl Config {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigLog {
-    pub level: Option<String>,
+    /// Log level.
+    #[serde(default = "ConfigLog::default_level")]
+    pub level: String,
+}
+
+impl Default for ConfigLog {
+    fn default() -> Self {
+        Self {
+            level: Self::default_level(),
+        }
+    }
+}
+
+impl ConfigLog {
+    fn default_level() -> String {
+        "info".to_owned()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigPrometheus {
+    /// Address of Prometheus service.
+    pub address: SocketAddr,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigAwsSqs {
-    #[serde(default, deserialize_with = "deserialize_commitment_level")]
-    pub commitment_level: SlotStatus,
-    pub url: String,
+    pub auth: ConfigAwsAuth,
     #[serde(deserialize_with = "deserialize_region")]
     pub region: Region,
-    pub auth: ConfigAwsAuth,
+    pub url: String,
     #[serde(deserialize_with = "deserialize_max_requests")]
     pub max_requests: usize,
-}
-
-fn deserialize_commitment_level<'de, D>(deserializer: D) -> Result<SlotStatus, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    match Deserialize::deserialize(deserializer)? {
-        SlotStatus::Processed => Err(de::Error::custom(
-            "`commitment_level` as `processed` is not supported",
-        )),
-        value => Ok(value),
-    }
+    #[serde(default, deserialize_with = "deserialize_commitment_level")]
+    pub commitment_level: SlotStatus,
 }
 
 fn deserialize_region<'de, D>(deserializer: D) -> Result<Region, D::Error>
@@ -86,6 +100,18 @@ where
         0 => usize::MAX,
         value => value,
     })
+}
+
+fn deserialize_commitment_level<'de, D>(deserializer: D) -> Result<SlotStatus, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Deserialize::deserialize(deserializer)? {
+        SlotStatus::Processed => Err(de::Error::custom(
+            "`commitment_level` as `processed` is not supported",
+        )),
+        value => Ok(value),
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
