@@ -34,7 +34,7 @@ use {
     solana_transaction_status::UiTransactionStatusMeta,
     spl_token::state::Account as SplTokenAccount,
     std::{
-        collections::{BTreeMap, BTreeSet, HashMap},
+        collections::{BTreeMap, BTreeSet, HashMap, LinkedList},
         convert::TryInto,
         sync::{
             atomic::{AtomicBool, Ordering},
@@ -174,6 +174,52 @@ enum SendMessage {
     Slot((SlotStatus, u64)),
     Account((ReplicaAccountInfo, Vec<String>)),
     Transaction(ReplicaTransactionInfo),
+}
+
+impl SendMessage {
+    fn payload(&self) -> String {
+        match self {
+            SendMessage::Slot((status, slot)) => json!({
+                "type": "slot",
+                "status": status,
+                "slot": slot,
+            }),
+            SendMessage::Account((account, filters)) => json!({
+                "type": "account",
+                "filters": filters,
+                "pubkey": account.pubkey.to_string(),
+                "lamports": account.lamports,
+                "owner": account.owner.to_string(),
+                "executable": account.executable,
+                "rent_epoch": account.rent_epoch,
+                "data": base64::encode(&account.data),
+                "write_version": account.write_version,
+                "slot": account.slot,
+            }),
+            SendMessage::Transaction(transaction) => json!({
+                "type": "transaction",
+                "signature": transaction.signature.to_string(),
+                "transaction": base64::encode(&bincode::serialize(&transaction.transaction).unwrap()),
+                "meta": transaction.meta,
+                "slot": transaction.slot,
+                "block_time": transaction.block_time.unwrap_or_default(),
+            }),
+        }
+        .to_string()
+    }
+}
+
+#[derive(Debug)]
+struct SendMessageWithPayload {
+    message: SendMessage,
+    payload: String,
+}
+
+impl From<SendMessage> for SendMessageWithPayload {
+    fn from(message: SendMessage) -> Self {
+        let payload = message.payload();
+        Self { message, payload }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -437,7 +483,7 @@ impl AwsSqsClient {
         });
 
         // Messages, accounts and tokenkeg history changes
-        let mut messages = vec![];
+        let mut messages: LinkedList<SendMessageWithPayload> = LinkedList::new();
         let mut accounts: BTreeMap<u64, BTreeSet<ReplicaAccountInfo>> = BTreeMap::new();
         type TokenkegHist = BTreeMap<u64, HashMap<Pubkey, Option<ReplicaAccountInfo>>>;
         let mut tokenkeg_owner_accounts_hist: TokenkegHist = BTreeMap::new();
@@ -458,7 +504,7 @@ impl AwsSqsClient {
         // Add new messages for an accounts on commitment_level
         #[allow(clippy::too_many_arguments)]
         fn generate_messages(
-            messages: &mut Vec<SendMessage>,
+            messages: &mut LinkedList<SendMessageWithPayload>,
             accounts: &BTreeSet<ReplicaAccountInfo>,
             accounts_filter: &AccountsFilter,
             tokenkeg_owner_accounts: &mut HashMap<Pubkey, ReplicaAccountInfo>,
@@ -549,13 +595,13 @@ impl AwsSqsClient {
 
                 let filters = filters.get_filters();
                 if !filters.is_empty() {
-                    messages.push(SendMessage::Account((account.clone(), filters)));
+                    messages.push_back(SendMessage::Account((account.clone(), filters)).into());
                 }
             }
 
             for transaction in transactions {
                 if transactions_filter.contains(transaction) {
-                    messages.push(SendMessage::Transaction(transaction.clone()))
+                    messages.push_back(SendMessage::Transaction(transaction.clone()).into())
                 }
             }
         }
@@ -580,23 +626,54 @@ impl AwsSqsClient {
         let mut transaction_current_slot = 0;
         loop {
             if !messages.is_empty() && send_jobs.available_permits() > 0 {
-                let slice = 0..messages.len().min(10);
-                let messages = messages.drain(slice).collect::<Vec<_>>();
-                let messages_count = messages.len();
-                let _ = stats_inprocess_tx.send(messages_count);
-                let client = client.clone();
-                let queue_url = queue_url.clone();
-                let stats_processed_tx = stats_processed_tx.clone();
-                let send_jobs = Arc::clone(&send_jobs);
-                let send_permit = send_jobs.try_acquire_owned().expect("available permit");
-                tokio::spawn(async move {
-                    let ts = Instant::now();
-                    if let Err(error) = Self::send_messages(client, queue_url, messages).await {
-                        error!("failed to send data: {:?}", error);
-                    }
-                    let _ = stats_processed_tx.send((messages_count, ts.elapsed()));
-                    drop(send_permit);
-                });
+                // The maximum allowed individual message size and the maximum total payload size (the sum of the
+                // individual lengths of all of the batched messages) are both 256 KB (262,144 bytes).
+                let mut messages_batch_size = 0;
+                let mut messages_batch = Vec::with_capacity(10);
+                while messages_batch.len() < 10 {
+                    match messages.pop_front() {
+                        Some(message) if messages_batch_size + message.payload.len() < 262_000 => {
+                            messages_batch_size += message.payload.len();
+                            messages_batch.push(message)
+                        }
+                        Some(message) => {
+                            // TODO: upload to S3
+                            // Drop if message payload more than allowed size
+                            if messages_batch.is_empty() {
+                                let kind = match message.message {
+                                    SendMessage::Account((account, _filters)) => {
+                                        format!("account {}", account.pubkey)
+                                    }
+                                    message => format!("{:?}", message),
+                                };
+                                error!("drop message because payload is too large: {}", kind);
+                            } else {
+                                messages.push_front(message);
+                            }
+                            break;
+                        }
+                        None => break,
+                    };
+                }
+                if !messages_batch.is_empty() {
+                    let messages_count = messages_batch.len();
+                    let _ = stats_inprocess_tx.send(messages_count);
+                    let client = client.clone();
+                    let queue_url = queue_url.clone();
+                    let stats_processed_tx = stats_processed_tx.clone();
+                    let send_jobs = Arc::clone(&send_jobs);
+                    let send_permit = send_jobs.try_acquire_owned().expect("available permit");
+                    tokio::spawn(async move {
+                        let ts = Instant::now();
+                        if let Err(error) =
+                            Self::send_messages(client, queue_url, messages_batch).await
+                        {
+                            error!("failed to send data: {:?}", error);
+                        }
+                        let _ = stats_processed_tx.send((messages_count, ts.elapsed()));
+                        drop(send_permit);
+                    });
+                }
                 continue;
             }
 
@@ -611,7 +688,7 @@ impl AwsSqsClient {
                 message = rx.recv() => match message {
                     Some(Message::UpdateSlot((status, slot))) => {
                         if is_slot_messages_enabled {
-                            messages.push(SendMessage::Slot((status, slot)));
+                            messages.push_back(SendMessage::Slot((status, slot)).into());
                             let _ = stats_queued_tx.send(1);
                         }
 
@@ -708,44 +785,22 @@ impl AwsSqsClient {
     async fn send_messages(
         client: RusotoSqsClient,
         queue_url: String,
-        messages: Vec<SendMessage>,
+        messages: Vec<SendMessageWithPayload>,
     ) -> SqsClientResult {
-        let entries = messages
-            .iter()
+        let (messages, entries): (Vec<SendMessage>, Vec<_>) = messages
+            .into_iter()
             .enumerate()
-            .map(|(id, message)| SendMessageBatchRequestEntry {
-                id: id.to_string(),
-                message_body: match message {
-                    SendMessage::Slot((status, slot)) => json!({
-                        "type": "slot",
-                        "status": status,
-                        "slot": slot,
-                    }),
-                    SendMessage::Account((account, filters)) => json!({
-                        "type": "account",
-                        "filters": filters,
-                        "pubkey": account.pubkey.to_string(),
-                        "lamports": account.lamports,
-                        "owner": account.owner.to_string(),
-                        "executable": account.executable,
-                        "rent_epoch": account.rent_epoch,
-                        "data": base64::encode(&account.data),
-                        "write_version": account.write_version,
-                        "slot": account.slot,
-                    }),
-                    SendMessage::Transaction(transaction) => json!({
-                        "type": "transaction",
-                        "signature": transaction.signature.to_string(),
-                        "transaction": base64::encode(&bincode::serialize(&transaction.transaction).unwrap()),
-                        "meta": transaction.meta,
-                        "slot": transaction.slot,
-                        "block_time": transaction.block_time.unwrap_or_default(),
-                    }),
-                }
-                .to_string(),
-                ..Default::default()
+            .map(|(id, message)| {
+                (
+                    message.message,
+                    SendMessageBatchRequestEntry {
+                        id: id.to_string(),
+                        message_body: message.payload,
+                        ..Default::default()
+                    },
+                )
             })
-            .collect::<Vec<_>>();
+            .unzip();
 
         let failed = client
             .send_message_batch(SendMessageBatchRequest { entries, queue_url })
