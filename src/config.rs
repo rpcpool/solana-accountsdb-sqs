@@ -142,7 +142,6 @@ impl<'de> Deserialize<'de> for ConfigAccountsFilter {
             ..Default::default()
         };
 
-
         for pubkey in raw.owner.into_iter() {
             let pubkey = pubkey.parse().map_err(de::Error::custom)?;
             filter.owner.insert(pubkey);

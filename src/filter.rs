@@ -86,7 +86,7 @@ impl AccountsFilter {
             .map(|set| set.iter().map(|name| name.as_str()).collect::<HashSet<_>>())
             .unwrap_or_default()
     }
-    
+
     pub fn match_account(&self, pubkey: &Pubkey) -> HashSet<&str> {
         Self::get(&self.account, pubkey)
     }
