@@ -109,6 +109,7 @@ pub struct ConfigSlots {
 #[derive(Debug, Default, Clone)]
 pub struct ConfigAccountsFilter {
     pub owner: HashSet<Pubkey>,
+    pub account: HashSet<Pubkey>,
     pub data_size: HashSet<usize>,
     pub tokenkeg_owner: HashSet<Pubkey>,
     pub tokenkeg_delegate: HashSet<Pubkey>,
@@ -123,6 +124,7 @@ impl<'de> Deserialize<'de> for ConfigAccountsFilter {
         #[serde(default, deny_unknown_fields)]
         struct ConfigAccountsFilterRaw {
             owner: HashSet<String>,
+            account: HashSet<String>,
             data_size: HashSet<usize>,
             tokenkeg_owner: HashSet<String>,
             tokenkeg_delegate: HashSet<String>,
@@ -140,9 +142,15 @@ impl<'de> Deserialize<'de> for ConfigAccountsFilter {
             ..Default::default()
         };
 
+
         for pubkey in raw.owner.into_iter() {
             let pubkey = pubkey.parse().map_err(de::Error::custom)?;
             filter.owner.insert(pubkey);
+        }
+
+        for pubkey in raw.account.into_iter() {
+            let pubkey = pubkey.parse().map_err(de::Error::custom)?;
+            filter.account.insert(pubkey);
         }
 
         for pubkey in raw.tokenkeg_owner.into_iter() {
