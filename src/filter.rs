@@ -18,6 +18,8 @@ pub struct AccountsFilter {
     filters: Vec<String>,
     owner: HashMap<Pubkey, HashSet<String>>,
     owner_required: HashSet<String>,
+    account: HashMap<Pubkey, HashSet<String>>,
+    account_required: HashSet<String>,
     data_size: HashMap<usize, HashSet<String>>,
     data_size_required: HashSet<String>,
     tokenkeg_owner: HashMap<Pubkey, HashSet<String>>,
@@ -36,6 +38,12 @@ impl AccountsFilter {
                 &mut this.owner_required,
                 &name,
                 filter.owner,
+            );
+            Self::set(
+                &mut this.account,
+                &mut this.account_required,
+                &name,
+                filter.account,
             );
             Self::set(
                 &mut this.data_size,
@@ -78,6 +86,10 @@ impl AccountsFilter {
             .map(|set| set.iter().map(|name| name.as_str()).collect::<HashSet<_>>())
             .unwrap_or_default()
     }
+    
+    pub fn match_account(&self, pubkey: &Pubkey) -> HashSet<&str> {
+        Self::get(&self.account, pubkey)
+    }
 
     pub fn match_owner(&self, pubkey: &Pubkey) -> HashSet<&str> {
         Self::get(&self.owner, pubkey)
@@ -106,6 +118,7 @@ impl AccountsFilter {
         AccountsFilterMatch {
             accounts_filter: self,
             owner: HashSet::new(),
+            account: HashSet::new(),
             data_size: HashSet::new(),
             tokenkeg_owner: HashSet::new(),
             tokenkeg_delegate: HashSet::new(),
@@ -117,6 +130,7 @@ impl AccountsFilter {
 pub struct AccountsFilterMatch<'a> {
     accounts_filter: &'a AccountsFilter,
     pub owner: HashSet<&'a str>,
+    pub account: HashSet<&'a str>,
     pub data_size: HashSet<&'a str>,
     pub tokenkeg_owner: HashSet<&'a str>,
     pub tokenkeg_delegate: HashSet<&'a str>,
@@ -132,6 +146,9 @@ impl<'a> AccountsFilterMatch<'a> {
                 let af = &self.accounts_filter;
 
                 // If filter name in required but not in matched => return `false`
+                if af.account_required.contains(name) && !self.account.contains(name) {
+                    return false;
+                }
                 if af.owner_required.contains(name) && !self.owner.contains(name) {
                     return false;
                 }
