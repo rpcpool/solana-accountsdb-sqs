@@ -10,6 +10,7 @@ use {
     std::{
         borrow::Cow,
         collections::{HashMap, HashSet},
+        fmt,
         fs::read_to_string,
         io::{Result as IoResult, Write},
         net::SocketAddr,
@@ -25,6 +26,7 @@ pub struct Config {
     pub log: ConfigLog,
     pub prometheus: Option<ConfigPrometheus>,
     pub sqs: ConfigAwsSqs,
+    pub messages: ConfigMessages,
     pub slots: ConfigSlots,
     #[serde(rename = "accounts")]
     pub accounts_filters: HashMap<String, ConfigAccountsFilter>,
@@ -83,10 +85,6 @@ pub struct ConfigAwsSqs {
     pub url: String,
     #[serde(deserialize_with = "deserialize_max_requests")]
     pub max_requests: usize,
-    #[serde(default, deserialize_with = "deserialize_commitment_level")]
-    pub commitment_level: SlotStatus,
-    #[serde(default)]
-    pub account_data_compression: AccountDataCompression,
 }
 
 fn deserialize_region<'de, D>(deserializer: D) -> Result<Region, D::Error>
@@ -101,10 +99,63 @@ fn deserialize_max_requests<'de, D>(deserializer: D) -> Result<usize, D::Error>
 where
     D: Deserializer<'de>,
 {
-    Ok(match usize::deserialize(deserializer)? {
+    Ok(match UsizeStr::deserialize(deserializer)?.value {
         0 => usize::MAX,
         value => value,
     })
+}
+
+#[derive(Debug, Default, PartialEq, Eq, Hash)]
+struct UsizeStr {
+    value: usize,
+}
+
+impl<'de> Deserialize<'de> for UsizeStr {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct AnyVisitor;
+
+        impl<'de> de::Visitor<'de> for AnyVisitor {
+            type Value = UsizeStr;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                write!(formatter, "string or number")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                value
+                    .replace('_', "")
+                    .parse::<usize>()
+                    .map_err(de::Error::custom)
+                    .map(|value| UsizeStr { value })
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(UsizeStr {
+                    value: value as usize,
+                })
+            }
+        }
+
+        deserializer.deserialize_any(AnyVisitor)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigMessages {
+    #[serde(default, deserialize_with = "deserialize_commitment_level")]
+    pub commitment_level: SlotStatus,
+    #[serde(default)]
+    pub account_data_compression: AccountDataCompression,
 }
 
 fn deserialize_commitment_level<'de, D>(deserializer: D) -> Result<SlotStatus, D::Error>
@@ -191,7 +242,7 @@ impl<'de> Deserialize<'de> for ConfigAccountsFilter {
         #[serde(default, deny_unknown_fields)]
         struct ConfigAccountsFilterRaw {
             owner: HashSet<String>,
-            data_size: HashSet<usize>,
+            data_size: HashSet<UsizeStr>,
             tokenkeg_owner: HashSet<String>,
             tokenkeg_delegate: HashSet<String>,
         }
@@ -204,7 +255,7 @@ impl<'de> Deserialize<'de> for ConfigAccountsFilter {
         }
 
         let mut filter = ConfigAccountsFilter {
-            data_size: raw.data_size,
+            data_size: raw.data_size.into_iter().map(|v| v.value).collect(),
             ..Default::default()
         };
 

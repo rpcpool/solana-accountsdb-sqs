@@ -245,27 +245,20 @@ pub struct AwsSqsClient {
 impl AwsSqsClient {
     pub async fn new(config: Config) -> SqsClientResult<Self> {
         if !matches!(
-            config.sqs.commitment_level,
+            config.messages.commitment_level,
             SlotStatus::Confirmed | SlotStatus::Finalized
         ) {
             return Err(SqsClientError::InvalidCommitmentLevel(
-                config.sqs.commitment_level,
+                config.messages.commitment_level,
             ));
         }
+
+        Self::check_aws(&config).await?;
 
         let startup_job = Arc::new(AtomicBool::new(true));
         let startup_job_loop = Arc::clone(&startup_job);
         let send_job = Arc::new(AtomicBool::new(true));
         let send_job_loop = Arc::clone(&send_job);
-
-        // Check that SQS is available
-        let (client, queue_url) = Self::create_sqs(config.sqs.clone())?;
-        client
-            .get_queue_attributes(GetQueueAttributesRequest {
-                attribute_names: None,
-                queue_url: queue_url.clone(),
-            })
-            .await?;
 
         let (send_queue, rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
@@ -287,6 +280,18 @@ impl AwsSqsClient {
         let sqs =
             RusotoSqsClient::new_with(request_dispatcher, credentials_provider, config.region);
         Ok((sqs, config.url))
+    }
+
+    // Check that SQS is available
+    async fn check_aws(config: &Config) -> SqsClientResult<()> {
+        let (client, queue_url) = Self::create_sqs(config.sqs.clone())?;
+        client
+            .get_queue_attributes(GetQueueAttributesRequest {
+                attribute_names: None,
+                queue_url: queue_url.clone(),
+            })
+            .await?;
+        Ok(())
     }
 
     fn send_message(&self, message: Message) -> SqsClientResult {
@@ -362,9 +367,9 @@ impl AwsSqsClient {
         startup_job: Arc<AtomicBool>,
         send_job: Arc<AtomicBool>,
     ) -> SqsClientResult {
-        let max_requests = config.sqs.max_requests;
-        let commitment_level = config.sqs.commitment_level;
-        let account_data_compression = config.sqs.account_data_compression;
+        let sqs_max_requests = config.sqs.max_requests;
+        let commitment_level = config.messages.commitment_level;
+        let account_data_compression = config.messages.account_data_compression;
         let (client, queue_url) = Self::create_sqs(config.sqs)?;
         let is_slot_messages_enabled = config.slots.enabled;
         let accounts_filter = AccountsFilter::new(config.accounts_filters);
@@ -574,7 +579,7 @@ impl AwsSqsClient {
         }
 
         // Handle messages
-        let send_jobs = Arc::new(Semaphore::new(max_requests));
+        let send_jobs = Arc::new(Semaphore::new(sqs_max_requests));
         let mut status_current_slot = 0;
         let mut account_current_slot = 0;
         let mut transaction_current_slot = 0;
@@ -733,7 +738,7 @@ impl AwsSqsClient {
             }
         }
         let _ = send_jobs
-            .acquire_many(max_requests.try_into().expect("valid size"))
+            .acquire_many(sqs_max_requests.try_into().expect("valid size"))
             .await
             .expect("alive");
         send_job.store(false, Ordering::Relaxed);

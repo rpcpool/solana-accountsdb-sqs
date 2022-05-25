@@ -16,6 +16,27 @@ Now you can run validator with plugin:
 $ solana-validator --geyser-plugin-config ./config.json
 ```
 
+### Accounts data compression
+
+Since SQS payload can be only 256KB long and Solana accounts can be up to 10MB not all accounts will fit to SQS message. Currently messages with these accounts are dropped. But it's possible to decrease number of dropped messages if we will compress data. Right now `zstd` and `gzip` are supported.
+
+```json
+"messages": {
+    "commitment_level": "confirmed",
+    "accounts_data_compression": {"algo": "none"}
+}
+"messages": {
+    "commitment_level": "confirmed",
+    "accounts_data_compression": {"algo": "zstd", "level": 3}
+}
+"messages": {
+    "commitment_level": "confirmed",
+    "accounts_data_compression": {"algo": "gzip", "level": 6}
+}
+```
+
+`level` field is optional for both compression algorithms.
+
 ### AWS Credentials
 
 **Required permissions:**
