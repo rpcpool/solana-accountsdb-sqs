@@ -18,7 +18,7 @@ use {
     },
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub libpath: String,
@@ -26,6 +26,7 @@ pub struct Config {
     pub log: ConfigLog,
     pub prometheus: Option<ConfigPrometheus>,
     pub sqs: ConfigAwsSqs,
+    pub s3: ConfigAwsS3,
     pub messages: ConfigMessages,
     pub slots: ConfigSlots,
     #[serde(rename = "accounts")]
@@ -47,7 +48,7 @@ impl Config {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ConfigLog {
     /// Log level.
@@ -88,6 +89,19 @@ pub struct ConfigAwsSqs {
     pub url: String,
     #[serde(deserialize_with = "deserialize_max_requests")]
     pub max_requests: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, untagged)]
+pub enum ConfigAwsAuth {
+    Static {
+        access_key_id: String,
+        secret_access_key: String,
+    },
+    Chain {
+        credentials_file: Option<String>,
+        profile: Option<String>,
+    },
 }
 
 fn deserialize_region<'de, D>(deserializer: D) -> Result<Region, D::Error>
@@ -154,11 +168,22 @@ impl<'de> Deserialize<'de> for UsizeStr {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ConfigAwsS3 {
+    pub auth: ConfigAwsAuth,
+    #[serde(deserialize_with = "deserialize_region")]
+    pub region: Region,
+    pub bucket: String,
+    #[serde(deserialize_with = "deserialize_max_requests")]
+    pub max_requests: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConfigMessages {
     #[serde(default, deserialize_with = "deserialize_commitment_level")]
     pub commitment_level: SlotStatus,
     #[serde(default)]
-    pub account_data_compression: AccountDataCompression,
+    pub accounts_data_compression: AccountsDataCompression,
 }
 
 fn deserialize_commitment_level<'de, D>(deserializer: D) -> Result<SlotStatus, D::Error>
@@ -176,7 +201,7 @@ where
 #[derive(Debug, Clone, Copy, Deserialize, derivative::Derivative)]
 #[derivative(Default)]
 #[serde(deny_unknown_fields, rename_all = "lowercase", tag = "algo")]
-pub enum AccountDataCompression {
+pub enum AccountsDataCompression {
     #[derivative(Default)]
     None,
     Zstd {
@@ -184,20 +209,20 @@ pub enum AccountDataCompression {
         level: i32,
     },
     Gzip {
-        #[serde(default = "AccountDataCompression::gzip_default_level")]
+        #[serde(default = "AccountsDataCompression::gzip_default_level")]
         level: u32,
     },
 }
 
-impl AccountDataCompression {
+impl AccountsDataCompression {
     #[allow(clippy::ptr_arg)]
     pub fn compress<'a>(&self, data: &'a Vec<u8>) -> IoResult<Cow<'a, Vec<u8>>> {
         Ok(match self {
-            AccountDataCompression::None => Cow::Borrowed(data),
-            AccountDataCompression::Zstd { level } => {
+            AccountsDataCompression::None => Cow::Borrowed(data),
+            AccountsDataCompression::Zstd { level } => {
                 Cow::Owned(zstd::stream::encode_all::<&[u8]>(data.as_ref(), *level)?)
             }
-            AccountDataCompression::Gzip { level } => {
+            AccountsDataCompression::Gzip { level } => {
                 let mut encoder = GzEncoder::new(Vec::new(), GzCompression::new(*level));
                 encoder.write_all(data)?;
                 Cow::Owned(encoder.finish()?)
@@ -208,19 +233,6 @@ impl AccountDataCompression {
     fn gzip_default_level() -> u32 {
         GzCompression::default().level()
     }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields, untagged)]
-pub enum ConfigAwsAuth {
-    Static {
-        access_key_id: String,
-        secret_access_key: String,
-    },
-    Chain {
-        credentials_file: Option<String>,
-        profile: Option<String>,
-    },
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]

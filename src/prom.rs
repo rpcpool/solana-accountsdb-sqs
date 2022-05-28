@@ -20,30 +20,60 @@ lazy_static::lazy_static! {
         "Number of messages in the queue for upload"
     ).unwrap();
 
-    pub static ref UPLOAD_REQUESTS: IntGauge = IntGauge::new(
-        "upload_requests",
-        "Number of active upload requests"
+    pub static ref UPLOAD_MESSAGES_TOTAL: IntCounterVec = IntCounterVec::new(
+        Opts::new("upload_messages_total", "Status of uploaded messages"),
+        &["status"]
     ).unwrap();
 
-    pub static ref UPLOAD_TOTAL: IntCounterVec = IntCounterVec::new(
-        Opts::new("upload_total", "Status of uploaded messages"),
+    pub static ref UPLOAD_SQS_REQUESTS: IntGauge = IntGauge::new(
+        "upload_sqs_requests",
+        "Number of active upload SQS requests"
+    ).unwrap();
+
+    pub static ref UPLOAD_SQS_TOTAL: IntCounterVec = IntCounterVec::new(
+        Opts::new("upload_sqs_total", "Status of uploaded SQS messages"),
+        &["status"]
+    ).unwrap();
+
+    pub static ref UPLOAD_S3_REQUESTS: IntGauge = IntGauge::new(
+        "upload_s3_requests",
+        "Number of active upload S3 requests"
+    ).unwrap();
+
+    pub static ref UPLOAD_S3_TOTAL: IntCounterVec = IntCounterVec::new(
+        Opts::new("upload_s3_total", "Status of uploaded S3 payloads"),
         &["status"]
     ).unwrap();
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum UploadTotalStatus {
+pub enum UploadMessagesStatus {
     Success,
     Failed,
     Dropped,
 }
 
-impl UploadTotalStatus {
+impl UploadMessagesStatus {
     pub fn as_str(&self) -> &str {
         match *self {
-            UploadTotalStatus::Success => "success",
-            UploadTotalStatus::Failed => "failed",
-            UploadTotalStatus::Dropped => "dropped",
+            UploadMessagesStatus::Success => "success",
+            UploadMessagesStatus::Failed => "failed",
+            UploadMessagesStatus::Dropped => "dropped",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum UploadAwsStatus {
+    Success,
+    Failed,
+}
+
+impl UploadAwsStatus {
+    pub fn as_str(&self) -> &str {
+        match *self {
+            UploadAwsStatus::Success => "success",
+            UploadAwsStatus::Failed => "failed",
         }
     }
 }
@@ -65,8 +95,10 @@ impl PrometheusService {
                 };
             }
             register!(UPLOAD_QUEUE_SIZE);
-            register!(UPLOAD_REQUESTS);
-            register!(UPLOAD_TOTAL);
+            register!(UPLOAD_SQS_REQUESTS);
+            register!(UPLOAD_SQS_TOTAL);
+            register!(UPLOAD_S3_REQUESTS);
+            register!(UPLOAD_S3_TOTAL);
         });
 
         let (tx, rx) = oneshot::channel();

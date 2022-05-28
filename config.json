@@ -16,6 +16,15 @@
         "url": "https://sqs.us-west-2.amazonaws.com/899202692022/solana-geyser",
         "max_requests": "10_000"
     },
+    "s3": {
+        "auth": {
+            "access_key_id": "access_key_id",
+            "secret_access_key": "secret_access_key"
+        },
+        "region": "us-west-2",
+        "bucket": "solana-geyser",
+        "max_requests": "10_000"
+    },
     "messages": {
         "commitment_level": "confirmed",
         "accounts_data_compression": {"algo": "none"}
