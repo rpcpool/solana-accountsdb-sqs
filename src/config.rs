@@ -48,17 +48,20 @@ impl Config {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, default)]
 pub struct ConfigLog {
     /// Log level.
     #[serde(default = "ConfigLog::default_level")]
     pub level: String,
+    /// Log filters on startup.
+    pub filters: bool,
 }
 
 impl Default for ConfigLog {
     fn default() -> Self {
         Self {
             level: Self::default_level(),
+            filters: false,
         }
     }
 }
@@ -227,6 +230,7 @@ pub struct ConfigSlots {
 
 #[derive(Debug, Default, Clone)]
 pub struct ConfigAccountsFilter {
+    pub account: HashSet<Pubkey>,
     pub owner: HashSet<Pubkey>,
     pub data_size: HashSet<usize>,
     pub tokenkeg_owner: HashSet<Pubkey>,
@@ -241,6 +245,7 @@ impl<'de> Deserialize<'de> for ConfigAccountsFilter {
         #[derive(Debug, Default, PartialEq, Eq, Deserialize)]
         #[serde(default, deny_unknown_fields)]
         struct ConfigAccountsFilterRaw {
+            account: HashSet<String>,
             owner: HashSet<String>,
             data_size: HashSet<UsizeStr>,
             tokenkeg_owner: HashSet<String>,
@@ -258,6 +263,11 @@ impl<'de> Deserialize<'de> for ConfigAccountsFilter {
             data_size: raw.data_size.into_iter().map(|v| v.value).collect(),
             ..Default::default()
         };
+
+        for pubkey in raw.account.into_iter() {
+            let pubkey = pubkey.parse().map_err(de::Error::custom)?;
+            filter.account.insert(pubkey);
+        }
 
         for pubkey in raw.owner.into_iter() {
             let pubkey = pubkey.parse().map_err(de::Error::custom)?;

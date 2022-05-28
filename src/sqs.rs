@@ -373,9 +373,12 @@ impl AwsSqsClient {
         let (client, queue_url) = Self::create_sqs(config.sqs)?;
         let is_slot_messages_enabled = config.slots.enabled;
         let accounts_filter = AccountsFilter::new(config.accounts_filters);
-        log::info!("Sqs accounts filters: {:#?}", accounts_filter);
         let transactions_filter = TransactionsFilter::new(config.transactions_filter);
-        log::info!("Sqs transactions filter: {:#?}", transactions_filter);
+        if config.log.filters {
+            log::info!("Sqs slots messages enabled: {}", is_slot_messages_enabled);
+            log::info!("Sqs accounts filters: {:#?}", accounts_filter);
+            log::info!("Sqs transactions filter: {:#?}", transactions_filter);
+        }
 
         // Save required Tokenkeg Accounts
         let mut tokenkeg_owner_accounts: HashMap<Pubkey, ReplicaAccountInfo> = HashMap::new();
@@ -468,6 +471,9 @@ impl AwsSqsClient {
             for account in accounts {
                 let mut filters = accounts_filter.create_match();
 
+                filters
+                    .account
+                    .extend(accounts_filter.match_account(&account.pubkey).iter());
                 filters
                     .owner
                     .extend(accounts_filter.match_owner(&account.owner).iter());

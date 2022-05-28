@@ -82,6 +82,7 @@ https://docs.rs/rusoto_credential/latest/rusoto_credential/struct.ChainProvider.
 
 Accounts can be filtered by:
 
+- `account`  - acount Pubkey, match to any Pubkey from the array
 - `owner` — account owner Pubkey, match to any Pubkey from the array
 - `data_size` — account data size, match to any value in the array
 - `tokenkeg_owner` —  `spl-token` accounts when `owner` field field in `Account` state match to any Pubkey from the array
@@ -91,7 +92,18 @@ All fields in filter are optional but at least 1 is required. Fields works as lo
 
 ##### Examples
 
-Filter accounts with `owner` Vote111111111111111111111111111111111111111` and size 128:
+Filter accounts:
+
+```json
+{
+    "account": [
+        "83astBRguLMdt2h5U1Tpdq5tjFoJ6noeGwaY3mDLVcri",
+        "vines1vzrYbzLMRdu58ou5XTby4qAqVRLmqo36NKPTg"
+    ]
+}
+```
+
+Filter accounts with `owner` `Vote111111111111111111111111111111111111111` and size 128:
 
 ```json
 {

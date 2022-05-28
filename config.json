@@ -1,7 +1,8 @@
 {
     "libpath": "libsolana_geyser_sqs.so",
     "log": {
-        "level": "info"
+        "level": "info",
+        "filters": true
     },
     "prometheus": {
         "address": "0.0.0.0:8999"
