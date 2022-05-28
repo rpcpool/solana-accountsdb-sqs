@@ -1,7 +1,8 @@
 {
     "libpath": "libsolana_geyser_sqs.so",
     "log": {
-        "level": "info"
+        "level": "info",
+        "filters": true
     },
     "sqs": {
         "url": "https://sqs.us-east-2.amazonaws.com/<account_id>/<accounts_queue>",

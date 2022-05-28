@@ -43,6 +43,9 @@ impl Config {
 #[serde(deny_unknown_fields)]
 pub struct ConfigLog {
     pub level: Option<String>,
+    /// Log filters on startup.
+    #[serde(default)]
+    pub filters: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
