@@ -76,7 +76,10 @@ Filter accounts:
 
 ```json
 {
-    "account": ["83astBRguLMdt2h5U1Tpdq5tjFoJ6noeGwaY3mDLVcri", "vines1vzrYbzLMRdu58ou5XTby4qAqVRLmqo36NKPTg"]
+    "account": [
+        "83astBRguLMdt2h5U1Tpdq5tjFoJ6noeGwaY3mDLVcri",
+        "vines1vzrYbzLMRdu58ou5XTby4qAqVRLmqo36NKPTg"
+    ]
 }
 ```
 
