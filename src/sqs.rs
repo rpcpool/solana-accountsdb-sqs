@@ -475,14 +475,14 @@ impl AwsSqsClient {
                 let mut filters = accounts_filter.create_match();
 
                 filters
+                    .account
+                    .extend(accounts_filter.match_account(&account.pubkey).iter());
+                filters
                     .owner
                     .extend(accounts_filter.match_owner(&account.owner).iter());
                 filters
                     .data_size
                     .extend(accounts_filter.match_data_size(account.data.len()).iter());
-                filters
-                    .account
-                    .extend(accounts_filter.match_account(&account.pubkey).iter());
 
                 if accounts_filter.match_tokenkeg(account) {
                     let owner = account.token_owner().expect("valid tokenkeg");
