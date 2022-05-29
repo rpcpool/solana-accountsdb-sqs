@@ -1,25 +1,35 @@
-use crate::sqs::SqsClientResult;
-
 use {
-    crate::{config::Config, sqs::AwsSqsClient},
+    crate::{
+        config::Config,
+        prom::PrometheusService,
+        sqs::{AwsSqsClient, SqsClientResult},
+    },
     solana_geyser_plugin_interface::geyser_plugin_interface::{
         GeyserPlugin, GeyserPluginError, ReplicaAccountInfoVersions, ReplicaBlockInfoVersions,
         ReplicaTransactionInfoVersions, Result as PluginResult, SlotStatus,
     },
+    tokio::{runtime::Runtime, time::Duration},
 };
+
+#[derive(Debug)]
+pub struct PluginInner {
+    runtime: Runtime,
+    client: AwsSqsClient,
+    prometheus: PrometheusService,
+}
 
 #[derive(Debug, Default)]
 pub struct Plugin {
-    sqs: Option<AwsSqsClient>,
+    inner: Option<PluginInner>,
 }
 
 impl Plugin {
-    fn with_sqs<F>(&self, f: F) -> PluginResult<()>
+    fn with_client<F>(&self, f: F) -> PluginResult<()>
     where
         F: FnOnce(&AwsSqsClient) -> SqsClientResult,
     {
-        let sqs = self.sqs.as_ref().expect("initialized");
-        f(sqs).map_err(|error| GeyserPluginError::Custom(Box::new(error)))
+        let inner = self.inner.as_ref().expect("initialized");
+        f(&inner.client).map_err(|error| GeyserPluginError::Custom(Box::new(error)))
     }
 }
 
@@ -32,21 +42,29 @@ impl GeyserPlugin for Plugin {
         let config = Config::load_from_file(config_file)?;
 
         // Setup logger
-        let log_level = config.log.level.as_deref().unwrap_or("info");
-        solana_logger::setup_with_default(log_level);
+        solana_logger::setup_with_default(&config.log.level);
 
-        // Sqs client
-        self.sqs = Some(
-            AwsSqsClient::new(config)
-                .map_err(|error| GeyserPluginError::Custom(Box::new(error)))?,
-        );
+        // Create inner
+        let runtime = Runtime::new().map_err(|error| GeyserPluginError::Custom(Box::new(error)))?;
+        let prometheus = PrometheusService::new(&runtime, config.prometheus);
+        let client = runtime
+            .block_on(AwsSqsClient::new(config))
+            .map_err(|error| GeyserPluginError::Custom(Box::new(error)))?;
+
+        self.inner = Some(PluginInner {
+            runtime,
+            client,
+            prometheus,
+        });
 
         Ok(())
     }
 
     fn on_unload(&mut self) {
-        if let Some(sqs) = self.sqs.take() {
-            sqs.shutdown();
+        if let Some(inner) = self.inner.take() {
+            inner.prometheus.shutdown();
+            inner.runtime.spawn(inner.client.shutdown());
+            inner.runtime.shutdown_timeout(Duration::from_secs(30));
         }
     }
 
@@ -56,11 +74,11 @@ impl GeyserPlugin for Plugin {
         slot: u64,
         _is_startup: bool,
     ) -> PluginResult<()> {
-        self.with_sqs(|sqs| sqs.update_account(account, slot))
+        self.with_client(|sqs| sqs.update_account(account, slot))
     }
 
     fn notify_end_of_startup(&mut self) -> PluginResult<()> {
-        self.with_sqs(|sqs| sqs.startup_finished())
+        self.with_client(|sqs| sqs.startup_finished())
     }
 
     fn update_slot_status(
@@ -69,7 +87,7 @@ impl GeyserPlugin for Plugin {
         _parent: Option<u64>,
         status: SlotStatus,
     ) -> PluginResult<()> {
-        self.with_sqs(|sqs| sqs.update_slot(slot, status))
+        self.with_client(|sqs| sqs.update_slot(slot, status))
     }
 
     fn notify_transaction(
@@ -77,11 +95,11 @@ impl GeyserPlugin for Plugin {
         transaction: ReplicaTransactionInfoVersions,
         slot: u64,
     ) -> PluginResult<()> {
-        self.with_sqs(|sqs| sqs.notify_transaction(transaction, slot))
+        self.with_client(|sqs| sqs.notify_transaction(transaction, slot))
     }
 
     fn notify_block_metadata(&mut self, blockinfo: ReplicaBlockInfoVersions) -> PluginResult<()> {
-        self.with_sqs(|sqs| sqs.notify_block_metadata(blockinfo))
+        self.with_client(|sqs| sqs.notify_block_metadata(blockinfo))
     }
 
     fn transaction_notifications_enabled(&self) -> bool {

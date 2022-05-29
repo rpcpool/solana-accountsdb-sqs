@@ -1,16 +1,49 @@
 use {
     anyhow::Result,
-    clap::{crate_name, Arg, Command},
+    clap::Parser,
+    futures::stream::{self, StreamExt},
     humantime::format_rfc3339_millis,
+    rusoto_s3::{DeleteObjectRequest, GetObjectOutput, GetObjectRequest, PutObjectRequest, S3},
     rusoto_sqs::{
-        DeleteMessageBatchRequest, DeleteMessageBatchRequestEntry, ReceiveMessageRequest,
-        ReceiveMessageResult, Sqs,
+        DeleteMessageBatchRequest, DeleteMessageBatchRequestEntry, MessageAttributeValue,
+        ReceiveMessageRequest, ReceiveMessageResult, SendMessageBatchRequest,
+        SendMessageBatchRequestEntry, Sqs,
     },
     serde::Deserialize,
-    solana_geyser_sqs::{config::Config, sqs::AwsSqsClient},
-    std::time::SystemTime,
-    tokio::time::{sleep, Duration},
+    solana_geyser_sqs::{
+        aws::{S3Client, SqsClient},
+        config::Config,
+    },
+    std::{
+        collections::hash_map::DefaultHasher,
+        hash::{Hash, Hasher},
+        time::SystemTime,
+    },
+    tokio::{
+        io::AsyncReadExt,
+        time::{sleep, Duration},
+    },
 };
+
+#[derive(Debug, Parser)]
+#[clap(author, version, about)]
+struct Args {
+    /// Path to geyser plugin config
+    #[clap(short, long)]
+    config: String,
+
+    /// Upload payloads and send messages
+    #[clap(short, long)]
+    generate: bool,
+
+    /// Print full messages
+    #[clap(short, long)]
+    details: bool,
+
+    /// Max number of messages per one request
+    #[clap(short, long, default_value_t = 10)]
+    max_messages: i64,
+}
 
 #[derive(Debug, Deserialize)]
 struct Message<'a> {
@@ -21,52 +54,77 @@ struct Message<'a> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Command::new(crate_name!())
-        .arg(
-            Arg::new("config")
-                .help("Path to geyser plugin config")
-                .long("config")
-                .short('c')
-                .required(true)
-                .takes_value(true),
-        )
-        .arg(
-            Arg::new("details")
-                .help("Print full messages")
-                .long("details")
-                .short('d')
-                .takes_value(false),
-        )
-        .get_matches();
+    let args = Args::parse();
+    let config = Config::load_from_file(&args.config)?;
 
-    let config_path = args.value_of("config").unwrap();
-    let config = Config::load_from_file(config_path)?;
+    if args.generate {
+        let config = config.clone();
+        tokio::spawn(async move {
+            send_loop(config).await.unwrap();
+        });
+    }
 
-    // let (client, queue_url) = AwsSqsClient::create_sqs(config.sqs.clone())?;
-    // tokio::spawn(async move {
-    //     use rusoto_sqs::{SendMessageBatchRequest, SendMessageBatchRequestEntry};
-    //     loop {
-    //         let result = client
-    //             .send_message_batch(SendMessageBatchRequest {
-    //                 entries: vec![SendMessageBatchRequestEntry {
-    //                     id: "0".to_owned(),
-    //                     message_body: "hello world".to_owned(),
-    //                     ..Default::default()
-    //                 }],
-    //                 queue_url: queue_url.clone(),
-    //             })
-    //             .await;
-    //         println!("{:?}", result);
-    //         sleep(Duration::from_secs(1)).await;
-    //     }
-    // });
+    receive_loop(args, config).await
+}
 
-    let (client, queue_url) = AwsSqsClient::create_sqs(config.sqs)?;
+async fn send_loop(config: Config) -> anyhow::Result<()> {
+    let sqs = SqsClient::new(config.sqs.clone())?;
+    let s3 = S3Client::new(config.s3.clone())?;
+
     loop {
-        let result = client
+        let body = "hello world".as_bytes().to_vec();
+        let mut hasher = DefaultHasher::new();
+        SystemTime::now().hash(&mut hasher);
+        let key = format!("consumer-test-{:x}", hasher.finish());
+
+        let result = s3
+            .client
+            .put_object(PutObjectRequest {
+                body: Some(body.into()),
+                bucket: s3.bucket.clone(),
+                key: key.clone(),
+                ..Default::default()
+            })
+            .await;
+        println!("Put s3 object ({}): {:?}", key, result);
+
+        let result = sqs
+            .client
+            .send_message_batch(SendMessageBatchRequest {
+                entries: vec![SendMessageBatchRequestEntry {
+                    id: "0".to_owned(),
+                    message_body: "s3".to_owned(),
+                    message_attributes: Some(maplit::hashmap! {
+                    "s3".to_owned() =>
+                        MessageAttributeValue {
+                            data_type: "String".to_owned(),
+                            string_value: Some(key),
+                            ..Default::default()
+                        },
+                    }),
+                    ..Default::default()
+                }],
+                queue_url: sqs.queue_url.clone(),
+            })
+            .await;
+        println!("Send sqs message: {:?}", result);
+
+        sleep(Duration::from_secs(1)).await;
+        // break Ok(());
+    }
+}
+
+async fn receive_loop(args: Args, config: Config) -> anyhow::Result<()> {
+    let sqs = SqsClient::new(config.sqs)?;
+    let s3 = S3Client::new(config.s3)?;
+
+    loop {
+        let result = sqs
+            .client
             .receive_message(ReceiveMessageRequest {
-                max_number_of_messages: Some(10),
-                queue_url: queue_url.clone(),
+                max_number_of_messages: Some(args.max_messages),
+                message_attribute_names: Some(vec!["All".to_owned()]),
+                queue_url: sqs.queue_url.clone(),
                 ..Default::default()
             })
             .await;
@@ -75,7 +133,60 @@ async fn main() -> Result<()> {
             Ok(ReceiveMessageResult {
                 messages: Some(messages),
             }) => {
-                if args.is_present("details") {
+                let messages = stream::iter(messages)
+                    .filter_map(|mut message| {
+                        let s3 = message
+                            .message_attributes
+                            .as_mut()
+                            .and_then(|map| map.remove("s3"))
+                            .and_then(|attr| attr.string_value)
+                            .map(|key| (s3.clone(), key));
+
+                        async move {
+                            if let Some((s3, key)) = s3 {
+                                let request = GetObjectRequest {
+                                    bucket: s3.bucket.clone(),
+                                    key: key.clone(),
+                                    ..Default::default()
+                                };
+                                match s3.client.get_object(request).await {
+                                    Ok(GetObjectOutput {
+                                        body: Some(body), ..
+                                    }) => {
+                                        let mut body = body.into_async_read();
+                                        let mut payload = String::new();
+                                        if body.read_to_string(&mut payload).await.is_ok() {
+                                            message.body = Some(payload);
+                                        }
+                                    }
+                                    Ok(_) => {}
+                                    Err(error) => {
+                                        println!(
+                                            "failed to get payload from s3 ({}): {:?}",
+                                            key, error
+                                        )
+                                    }
+                                };
+
+                                let request = DeleteObjectRequest {
+                                    bucket: s3.bucket.clone(),
+                                    key: key.clone(),
+                                    ..Default::default()
+                                };
+                                if let Err(error) = s3.client.delete_object(request).await {
+                                    println!(
+                                        "failed to delete payload from s3 ({}): {:?}",
+                                        key, error
+                                    );
+                                }
+                            }
+                            Some(message)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .await;
+
+                if args.details {
                     println!("{} | messages: {:?}", now, messages);
                 } else {
                     let messages = messages
@@ -105,10 +216,11 @@ async fn main() -> Result<()> {
                     })
                     .collect::<Vec<_>>();
                 if !entries.is_empty() {
-                    let _ = client
+                    let _ = sqs
+                        .client
                         .delete_message_batch(DeleteMessageBatchRequest {
                             entries,
-                            queue_url: queue_url.clone(),
+                            queue_url: sqs.queue_url.clone(),
                         })
                         .await;
                 }
