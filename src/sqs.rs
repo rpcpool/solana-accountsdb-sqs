@@ -1,24 +1,19 @@
 use {
     super::{
-        config::{Config, ConfigAwsAuth, ConfigAwsSqs},
+        aws::{AwsError, S3Client, SqsClient},
+        config::{AccountsDataCompression, Config},
         filter::{AccountsFilter, TransactionsFilter},
+        prom::{UploadMessagesStatus, UPLOAD_MESSAGES_TOTAL, UPLOAD_QUEUE_SIZE},
     },
     arrayref::array_ref,
-    async_trait::async_trait,
-    futures::future::FutureExt,
-    humantime::format_duration,
+    futures::{
+        future::FutureExt,
+        stream::{self, StreamExt},
+    },
     log::*,
-    rusoto_core::{HttpClient, RusotoError},
-    rusoto_credential::{
-        AutoRefreshingProvider, AwsCredentials, ChainProvider, CredentialsError, ProfileProvider,
-        ProvideAwsCredentials, StaticProvider,
-    },
-    rusoto_sqs::{
-        GetQueueAttributesError, GetQueueAttributesRequest, SendMessageBatchError,
-        SendMessageBatchRequest, SendMessageBatchRequestEntry, Sqs, SqsClient as RusotoSqsClient,
-    },
+    rusoto_sqs::{MessageAttributeValue, SendMessageBatchRequestEntry},
     serde::{Deserialize, Serialize},
-    serde_json::json,
+    serde_json::{json, Value},
     solana_geyser_plugin_interface::geyser_plugin_interface::{
         ReplicaAccountInfoVersions, ReplicaBlockInfoVersions, ReplicaTransactionInfoVersions,
         SlotStatus as GeyserSlotStatus,
@@ -34,18 +29,18 @@ use {
     solana_transaction_status::UiTransactionStatusMeta,
     spl_token::state::Account as SplTokenAccount,
     std::{
-        collections::{BTreeMap, BTreeSet, HashMap},
+        collections::{BTreeMap, BTreeSet, HashMap, LinkedList},
         convert::TryInto,
+        io::Result as IoResult,
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc,
         },
         thread::sleep,
-        time::{Duration, Instant},
+        time::Duration,
     },
     thiserror::Error,
     tokio::{
-        runtime::Runtime,
         sync::{mpsc, Semaphore},
         time::sleep as sleep_async,
     },
@@ -176,22 +171,110 @@ enum SendMessage {
     Transaction(ReplicaTransactionInfo),
 }
 
+impl SendMessage {
+    fn payload(&self, compression: &AccountsDataCompression) -> IoResult<String> {
+        Ok(match self {
+            SendMessage::Slot((status, slot)) => json!({
+                "type": "slot",
+                "status": status,
+                "slot": slot,
+            }),
+            SendMessage::Account((account, filters)) => json!({
+                "type": "account",
+                "filters": filters,
+                "pubkey": account.pubkey.to_string(),
+                "lamports": account.lamports,
+                "owner": account.owner.to_string(),
+                "executable": account.executable,
+                "rent_epoch": account.rent_epoch,
+                "data": base64::encode(compression.compress(&account.data)?.as_ref()),
+                "write_version": account.write_version,
+                "slot": account.slot,
+            }),
+            SendMessage::Transaction(transaction) => json!({
+                "type": "transaction",
+                "signature": transaction.signature.to_string(),
+                "transaction": base64::encode(&bincode::serialize(&transaction.transaction).unwrap()),
+                "meta": transaction.meta,
+                "slot": transaction.slot,
+                "block_time": transaction.block_time.unwrap_or_default(),
+            }),
+        }
+        .to_string())
+    }
+
+    fn s3_key(&self) -> String {
+        match self {
+            Self::Slot((status, slot)) => {
+                warn!("Slot is not expected to be uploaded to S3");
+                format!("slot-{}-{:?}", slot, status)
+            }
+            Self::Account((account, _filters)) => {
+                format!(
+                    "account-{}-{}-{}",
+                    account.slot, account.pubkey, account.write_version
+                )
+            }
+            Self::Transaction(transaction) => {
+                warn!("Transaction is not expected to be uploaded to S3");
+                format!("transaction-{}-{}", transaction.slot, transaction.signature)
+            }
+        }
+    }
+
+    fn update_info(&self, mut value: Value) -> Value {
+        match self {
+            SendMessage::Slot((status, slot)) => {
+                value["status"] = json!(status);
+                value["slot"] = json!(slot);
+            }
+            SendMessage::Account((account, _filters)) => {
+                value["pubkey"] = json!(account.pubkey.to_string());
+                value["slot"] = json!(account.slot);
+                value["write_version"] = json!(account.write_version);
+            }
+            SendMessage::Transaction(transaction) => {
+                value["signature"] = json!(transaction.signature.to_string());
+                value["slot"] = json!(transaction.slot);
+            }
+        };
+        value
+    }
+}
+
+#[derive(Debug)]
+struct SendMessageWithPayload {
+    message: SendMessage,
+    s3: bool,
+    payload: String,
+}
+
+impl SendMessageWithPayload {
+    const S3_SIZE: usize = 250;
+
+    fn new(message: SendMessage, payload: String) -> Self {
+        Self {
+            message,
+            s3: payload.len() > SqsClient::REQUEST_LIMIT,
+            payload,
+        }
+    }
+
+    fn payload_size(&self) -> usize {
+        if self.s3 {
+            Self::S3_SIZE
+        } else {
+            self.payload.len()
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum SqsClientError {
     #[error("invalid commitment_level: {0:?}")]
     InvalidCommitmentLevel(SlotStatus),
-    #[error("failed to create Runtime: {0}")]
-    RuntimeCreate(std::io::Error),
-    #[error("aws credential error: {0}")]
-    AwsCredentials(#[from] CredentialsError),
-    #[error("HttpClient error: {0}")]
-    AwsHttpClientTls(#[from] rusoto_core::request::TlsError),
-    #[error("failed to get queue attributes: {0}")]
-    SqsGetAttributes(#[from] RusotoError<GetQueueAttributesError>),
-    #[error("failed to send messages: {0}")]
-    SqsSendMessageBatch(#[from] RusotoError<SendMessageBatchError>),
-    #[error("failed to send some messages: {0}")]
-    SqsSendMessageBatchEntry(String),
+    #[error("aws error: {0}")]
+    Aws(#[from] AwsError),
     #[error("send message through send queue failed: channel is closed")]
     UpdateQueueChannelClosed,
 }
@@ -200,64 +283,41 @@ pub type SqsClientResult<T = ()> = Result<T, SqsClientError>;
 
 #[derive(Debug)]
 pub struct AwsSqsClient {
-    runtime: Runtime,
     send_queue: mpsc::UnboundedSender<Message>,
     startup_job: Arc<AtomicBool>,
     send_job: Arc<AtomicBool>,
 }
 
 impl AwsSqsClient {
-    pub fn new(config: Config) -> SqsClientResult<Self> {
+    pub async fn new(config: Config) -> SqsClientResult<Self> {
         if !matches!(
-            config.sqs.commitment_level,
+            config.messages.commitment_level,
             SlotStatus::Confirmed | SlotStatus::Finalized
         ) {
             return Err(SqsClientError::InvalidCommitmentLevel(
-                config.sqs.commitment_level,
+                config.messages.commitment_level,
             ));
         }
+
+        SqsClient::new(config.sqs.clone())?.check().await?;
 
         let startup_job = Arc::new(AtomicBool::new(true));
         let startup_job_loop = Arc::clone(&startup_job);
         let send_job = Arc::new(AtomicBool::new(true));
         let send_job_loop = Arc::clone(&send_job);
-        let runtime = Runtime::new().map_err(SqsClientError::RuntimeCreate)?;
-        let send_queue = runtime.block_on(async move {
-            // Check that SQS is available
-            let (client, queue_url) = Self::create_sqs(config.sqs.clone())?;
-            client
-                .get_queue_attributes(GetQueueAttributesRequest {
-                    attribute_names: None,
-                    queue_url: queue_url.clone(),
-                })
-                .await?;
 
-            let (tx, rx) = mpsc::unbounded_channel();
-            tokio::spawn(async move {
-                if let Err(error) =
-                    Self::send_loop(config, rx, startup_job_loop, send_job_loop).await
-                {
-                    error!("update_loop failed: {:?}", error);
-                }
-            });
-
-            Ok::<_, SqsClientError>(tx)
-        })?;
+        let (send_queue, rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            if let Err(error) = Self::send_loop(config, rx, startup_job_loop, send_job_loop).await {
+                error!("update_loop failed: {:?}", error);
+            }
+        });
 
         Ok(Self {
-            runtime,
             send_queue,
             startup_job,
             send_job,
         })
-    }
-
-    pub fn create_sqs(config: ConfigAwsSqs) -> SqsClientResult<(RusotoSqsClient, String)> {
-        let request_dispatcher = HttpClient::new()?;
-        let credentials_provider = AwsCredentialsProvider::new(config.auth)?;
-        let sqs =
-            RusotoSqsClient::new_with(request_dispatcher, credentials_provider, config.region);
-        Ok((sqs, config.url))
     }
 
     fn send_message(&self, message: Message) -> SqsClientResult {
@@ -266,14 +326,12 @@ impl AwsSqsClient {
             .map_err(|_| SqsClientError::UpdateQueueChannelClosed)
     }
 
-    pub fn shutdown(self) {
+    pub async fn shutdown(self) {
         if self.send_message(Message::Shutdown).is_ok() {
             while self.send_job.load(Ordering::Relaxed) {
-                sleep(Duration::from_micros(10));
+                sleep_async(Duration::from_micros(10)).await;
             }
         }
-
-        self.runtime.shutdown_timeout(Duration::from_secs(10));
     }
 
     pub fn startup_finished(&self) -> SqsClientResult {
@@ -335,9 +393,11 @@ impl AwsSqsClient {
         startup_job: Arc<AtomicBool>,
         send_job: Arc<AtomicBool>,
     ) -> SqsClientResult {
-        let max_requests = config.sqs.max_requests;
-        let commitment_level = config.sqs.commitment_level;
-        let (client, queue_url) = Self::create_sqs(config.sqs)?;
+        let sqs_max_requests = config.sqs.max_requests;
+        let commitment_level = config.messages.commitment_level;
+        let accounts_data_compression = config.messages.accounts_data_compression;
+        let sqs = SqsClient::new(config.sqs)?;
+        let s3 = S3Client::new(config.s3)?;
         let is_slot_messages_enabled = config.slots.enabled;
         let accounts_filter = AccountsFilter::new(config.accounts_filters);
         let transactions_filter = TransactionsFilter::new(config.transactions_filter);
@@ -382,71 +442,34 @@ impl AwsSqsClient {
         }
         info!("startup finished");
 
-        // Spawn simple stats
-        let send_job_stats = Arc::clone(&send_job);
-        let (stats_queued_tx, mut stats_queued_rx) = mpsc::unbounded_channel();
-        let (stats_inprocess_tx, mut stats_inprocess_rx) = mpsc::unbounded_channel();
-        let (stats_processed_tx, mut stats_processed_rx) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            let mut last_update = Instant::now();
-            let mut queued = 0;
-            let mut inprocess = 0;
-            let mut processed = 0;
-            let mut processed_time = Duration::from_secs(0);
-            loop {
-                if !send_job_stats.load(Ordering::Relaxed) {
-                    break;
-                }
-
-                while let Ok(count) = stats_queued_rx.try_recv() {
-                    queued += count;
-                }
-                while let Ok(count) = stats_inprocess_rx.try_recv() {
-                    queued -= count;
-                    inprocess += count;
-                }
-                while let Ok((count, elapsed)) = stats_processed_rx.try_recv() {
-                    inprocess -= count;
-                    processed += count;
-                    processed_time += elapsed * count as u32;
-                }
-
-                if last_update.elapsed() < Duration::from_secs(10) {
-                    sleep_async(Duration::from_micros(1_000)).await;
-                    continue;
-                }
-
-                log!(
-                    if inprocess > 200 {
-                        Level::Warn
-                    } else {
-                        Level::Info
-                    },
-                    "queued: {}, in process: {}, processed: {}, avg processing time: {}",
-                    queued,
-                    inprocess,
-                    processed,
-                    format_duration(
-                        processed_time
-                            .checked_div(processed as u32)
-                            .unwrap_or_default()
-                    )
-                );
-
-                last_update = Instant::now();
-                processed = 0;
-                processed_time = Duration::from_secs(0);
-            }
-        });
-
         // Messages, accounts and tokenkeg history changes
-        let mut messages = vec![];
+        let mut messages: LinkedList<SendMessageWithPayload> = LinkedList::new();
         let mut accounts: BTreeMap<u64, BTreeSet<ReplicaAccountInfo>> = BTreeMap::new();
         type TokenkegHist = BTreeMap<u64, HashMap<Pubkey, Option<ReplicaAccountInfo>>>;
         let mut tokenkeg_owner_accounts_hist: TokenkegHist = BTreeMap::new();
         let mut tokenkeg_delegate_accounts_hist: TokenkegHist = BTreeMap::new();
         let mut transactions: BTreeMap<u64, Vec<ReplicaTransactionInfo>> = BTreeMap::new();
         let mut blocks: BTreeMap<u64, ReplicaBlockMetadata> = BTreeMap::new();
+
+        // Add message to the tail and increase counter
+        fn add_message(
+            messages: &mut LinkedList<SendMessageWithPayload>,
+            message: SendMessage,
+            accounts_data_compression: &AccountsDataCompression,
+        ) {
+            match message.payload(accounts_data_compression) {
+                Ok(payload) => {
+                    messages.push_back(SendMessageWithPayload::new(message, payload));
+                    UPLOAD_QUEUE_SIZE.inc();
+                }
+                Err(error) => {
+                    error!("failed to create payload: {:?}", error);
+                    UPLOAD_MESSAGES_TOTAL
+                        .with_label_values(&[UploadMessagesStatus::Dropped.as_str()])
+                        .inc();
+                }
+            }
+        }
 
         // Remove outdated slots from `BTreeMap<u64, T>` (accounts, tokenkeg history)
         fn remove_outdated_slots<T>(map: &mut BTreeMap<u64, T>, min_slot: u64) {
@@ -461,7 +484,7 @@ impl AwsSqsClient {
         // Add new messages for an accounts on commitment_level
         #[allow(clippy::too_many_arguments)]
         fn generate_messages(
-            messages: &mut Vec<SendMessage>,
+            messages: &mut LinkedList<SendMessageWithPayload>,
             accounts: &BTreeSet<ReplicaAccountInfo>,
             accounts_filter: &AccountsFilter,
             tokenkeg_owner_accounts: &mut HashMap<Pubkey, ReplicaAccountInfo>,
@@ -470,6 +493,7 @@ impl AwsSqsClient {
             tokenkeg_delegate_accounts_hist: &mut HashMap<Pubkey, Option<ReplicaAccountInfo>>,
             transactions: &[ReplicaTransactionInfo],
             transactions_filter: &TransactionsFilter,
+            accounts_data_compression: &AccountsDataCompression,
         ) {
             for account in accounts {
                 let mut filters = accounts_filter.create_match();
@@ -555,13 +579,21 @@ impl AwsSqsClient {
 
                 let filters = filters.get_filters();
                 if !filters.is_empty() {
-                    messages.push(SendMessage::Account((account.clone(), filters)));
+                    add_message(
+                        messages,
+                        SendMessage::Account((account.clone(), filters)),
+                        accounts_data_compression,
+                    );
                 }
             }
 
             for transaction in transactions {
                 if transactions_filter.contains(transaction) {
-                    messages.push(SendMessage::Transaction(transaction.clone()))
+                    add_message(
+                        messages,
+                        SendMessage::Transaction(transaction.clone()),
+                        accounts_data_compression,
+                    );
                 }
             }
         }
@@ -580,27 +612,35 @@ impl AwsSqsClient {
         }
 
         // Handle messages
-        let send_jobs = Arc::new(Semaphore::new(max_requests));
+        let send_jobs = Arc::new(Semaphore::new(sqs_max_requests));
         let mut status_current_slot = 0;
         let mut account_current_slot = 0;
         let mut transaction_current_slot = 0;
         loop {
             if !messages.is_empty() && send_jobs.available_permits() > 0 {
-                let slice = 0..messages.len().min(10);
-                let messages = messages.drain(slice).collect::<Vec<_>>();
-                let messages_count = messages.len();
-                let _ = stats_inprocess_tx.send(messages_count);
-                let client = client.clone();
-                let queue_url = queue_url.clone();
-                let stats_processed_tx = stats_processed_tx.clone();
+                let mut messages_batch_size = 0;
+                let mut messages_batch = Vec::with_capacity(10);
+                while messages_batch.len() < 10 {
+                    if let Some(message) = messages.pop_front() {
+                        if messages_batch_size + message.payload_size() <= SqsClient::REQUEST_LIMIT
+                        {
+                            messages_batch_size += message.payload_size();
+                            messages_batch.push(message);
+                        } else {
+                            messages.push_front(message);
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                UPLOAD_QUEUE_SIZE.sub(messages_batch.len() as i64);
+                let sqs = sqs.clone();
+                let s3 = s3.clone();
                 let send_jobs = Arc::clone(&send_jobs);
                 let send_permit = send_jobs.try_acquire_owned().expect("available permit");
                 tokio::spawn(async move {
-                    let ts = Instant::now();
-                    if let Err(error) = Self::send_messages(client, queue_url, messages).await {
-                        error!("failed to send data: {:?}", error);
-                    }
-                    let _ = stats_processed_tx.send((messages_count, ts.elapsed()));
+                    Self::send_messages(sqs, s3, messages_batch).await;
                     drop(send_permit);
                 });
                 continue;
@@ -617,8 +657,7 @@ impl AwsSqsClient {
                 message = rx.recv() => match message {
                     Some(Message::UpdateSlot((status, slot))) => {
                         if is_slot_messages_enabled {
-                            messages.push(SendMessage::Slot((status, slot)));
-                            let _ = stats_queued_tx.send(1);
+                            add_message(&mut messages, SendMessage::Slot((status, slot)), &accounts_data_compression);
                         }
 
                         if status == commitment_level {
@@ -652,7 +691,6 @@ impl AwsSqsClient {
                                         transaction.block_time = block.block_time;
                                     }
 
-                                    let size = messages.len();
                                     generate_messages(
                                         &mut messages,
                                         accounts,
@@ -663,8 +701,8 @@ impl AwsSqsClient {
                                         tokenkeg_delegate_accounts_hist.entry(slot).or_default(),
                                         transactions,
                                         &transactions_filter,
+                                        &accounts_data_compression
                                     );
-                                    let _ = stats_queued_tx.send(messages.len() - size);
                                 }
                                 _ => error!(
                                     "send_loop error: accounts/transactions/block for slot {} does not exists",
@@ -702,7 +740,7 @@ impl AwsSqsClient {
             }
         }
         let _ = send_jobs
-            .acquire_many(max_requests.try_into().expect("valid size"))
+            .acquire_many(sqs_max_requests.try_into().expect("valid size"))
             .await
             .expect("alive");
         send_job.store(false, Ordering::Relaxed);
@@ -711,139 +749,86 @@ impl AwsSqsClient {
         Ok(())
     }
 
-    async fn send_messages(
-        client: RusotoSqsClient,
-        queue_url: String,
-        messages: Vec<SendMessage>,
-    ) -> SqsClientResult {
-        let entries = messages
-            .iter()
-            .enumerate()
-            .map(|(id, message)| SendMessageBatchRequestEntry {
-                id: id.to_string(),
-                message_body: match message {
-                    SendMessage::Slot((status, slot)) => json!({
-                        "type": "slot",
-                        "status": status,
-                        "slot": slot,
-                    }),
-                    SendMessage::Account((account, filters)) => json!({
-                        "type": "account",
-                        "filters": filters,
-                        "pubkey": account.pubkey.to_string(),
-                        "lamports": account.lamports,
-                        "owner": account.owner.to_string(),
-                        "executable": account.executable,
-                        "rent_epoch": account.rent_epoch,
-                        "data": base64::encode(&account.data),
-                        "write_version": account.write_version,
-                        "slot": account.slot,
-                    }),
-                    SendMessage::Transaction(transaction) => json!({
-                        "type": "transaction",
-                        "signature": transaction.signature.to_string(),
-                        "transaction": base64::encode(&bincode::serialize(&transaction.transaction).unwrap()),
-                        "meta": transaction.meta,
-                        "slot": transaction.slot,
-                        "block_time": transaction.block_time.unwrap_or_default(),
-                    }),
-                }
-                .to_string(),
-                ..Default::default()
-            })
-            .collect::<Vec<_>>();
+    async fn send_messages(sqs: SqsClient, s3: S3Client, messages: Vec<SendMessageWithPayload>) {
+        let mut success_count = 0;
+        let mut failed_count = 0;
 
-        let failed = client
-            .send_message_batch(SendMessageBatchRequest { entries, queue_url })
-            .await?
-            .failed;
-
-        if failed.is_empty() {
-            Ok(())
-        } else {
-            Err(SqsClientError::SqsSendMessageBatchEntry(
-                serde_json::to_string(
-                    &failed
-                        .into_iter()
-                        .map(|entry| {
-                            let mut value = json!({
-                                "code": entry.code,
-                                "message": entry.message,
-                                "sender_fault": entry.sender_fault,
-                            });
-
-                            let index = entry.id.parse::<usize>().ok();
-                            match index.and_then(|index| messages.get(index)).unwrap() {
-                                SendMessage::Slot((status, slot)) => {
-                                    value["status"] = json!(status);
-                                    value["slot"] = json!(slot);
+        let messages_initial_count = messages.len();
+        let (messages, entries): (Vec<SendMessage>, Vec<_>) =
+            stream::iter(messages.into_iter().enumerate())
+                .filter_map(|(id, message)| {
+                    let s3 = if message.s3 { Some(s3.clone()) } else { None };
+                    async move {
+                        let (message_body, message_attributes) = match s3 {
+                            Some(s3) => {
+                                let key = message.message.s3_key();
+                                if let Err(error) = s3
+                                    .put_object(key.clone(), message.payload.into_bytes())
+                                    .await
+                                {
+                                    let value = message.message.update_info(json!({}));
+                                    error!(
+                                        "failed to upload payload to s3 ({:?}): {:?}",
+                                        error,
+                                        serde_json::to_string(&value)
+                                    );
+                                    return None;
                                 }
-                                SendMessage::Account((account, _filters)) => {
-                                    value["pubkey"] = json!(account.pubkey.to_string());
-                                    value["slot"] = json!(account.slot);
-                                    value["write_version"] = json!(account.write_version);
-                                }
-                                SendMessage::Transaction(transaction) => {
-                                    value["signature"] = json!(transaction.signature.to_string());
-                                    value["slot"] = json!(transaction.slot);
-                                }
+                                (
+                                    "s3".to_owned(),
+                                    Some(maplit::hashmap! {
+                                        "s3".to_owned() => MessageAttributeValue {
+                                            data_type: "String".to_owned(),
+                                            string_value: Some(key),
+                                            ..Default::default()
+                                        }
+                                    }),
+                                )
                             }
-
-                            value
-                        })
-                        .collect::<Vec<_>>(),
-                )
-                .unwrap(),
-            ))
-        }
-    }
-}
-
-#[allow(clippy::large_enum_variant)]
-enum AwsCredentialsProvider {
-    Static(StaticProvider),
-    Chain(AutoRefreshingProvider<ChainProvider>),
-}
-
-impl AwsCredentialsProvider {
-    fn new(config: ConfigAwsAuth) -> SqsClientResult<Self> {
-        match config {
-            ConfigAwsAuth::Static {
-                access_key_id,
-                secret_access_key,
-            } => Ok(Self::Static(StaticProvider::new_minimal(
-                access_key_id,
-                secret_access_key,
-            ))),
-            ConfigAwsAuth::Chain {
-                credentials_file,
-                profile,
-            } => {
-                let profile_provider = match (credentials_file, profile) {
-                    (Some(file_path), Some(profile)) => {
-                        ProfileProvider::with_configuration(file_path, profile)
+                            None => (message.payload, None),
+                        };
+                        Some((
+                            message.message,
+                            SendMessageBatchRequestEntry {
+                                id: id.to_string(),
+                                message_body,
+                                message_attributes,
+                                ..Default::default()
+                            },
+                        ))
                     }
-                    (Some(file_path), None) => {
-                        ProfileProvider::with_default_configuration(file_path)
-                    }
-                    (None, Some(profile)) => ProfileProvider::with_default_credentials(profile)?,
-                    (None, None) => ProfileProvider::new()?,
-                };
-                Ok(Self::Chain(AutoRefreshingProvider::new(
-                    ChainProvider::with_profile_provider(profile_provider),
-                )?))
+                })
+                .unzip()
+                .await;
+        failed_count += messages_initial_count - messages.len();
+
+        let failed = sqs.send_batch(entries).await;
+        success_count += messages.len() - failed.len();
+        failed_count += failed.len();
+        for entry in failed {
+            let index = entry.id.parse::<usize>().ok();
+            if let Some(message) = index.and_then(|index| messages.get(index)) {
+                let value = message.update_info(json!({
+                    "code": entry.code,
+                    "message": entry.message,
+                    "sender_fault": entry.sender_fault,
+                }));
+                error!(
+                    "failed to send sqs message: {:?}",
+                    serde_json::to_string(&value)
+                );
             }
         }
-    }
-}
 
-#[async_trait]
-impl ProvideAwsCredentials for AwsCredentialsProvider {
-    async fn credentials(&self) -> Result<AwsCredentials, CredentialsError> {
-        match self {
-            Self::Static(p) => p.credentials(),
-            Self::Chain(p) => p.credentials(),
+        for (status, count) in [
+            (UploadMessagesStatus::Success, success_count),
+            (UploadMessagesStatus::Failed, failed_count),
+        ] {
+            if count > 0 {
+                UPLOAD_MESSAGES_TOTAL
+                    .with_label_values(&[status.as_str()])
+                    .inc_by(count as u64);
+            }
         }
-        .await
     }
 }
