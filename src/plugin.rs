@@ -64,7 +64,7 @@ impl GeyserPlugin for Plugin {
         if let Some(inner) = self.inner.take() {
             inner.prometheus.shutdown();
             inner.runtime.spawn(inner.client.shutdown());
-            inner.runtime.shutdown_timeout(Duration::from_secs(10));
+            inner.runtime.shutdown_timeout(Duration::from_secs(30));
         }
     }
 

@@ -5,14 +5,13 @@ use {
     humantime::format_rfc3339_millis,
     rusoto_s3::{DeleteObjectRequest, GetObjectOutput, GetObjectRequest, PutObjectRequest, S3},
     rusoto_sqs::{
-        DeleteMessageBatchRequest, DeleteMessageBatchRequestEntry, MessageAttributeValue,
-        ReceiveMessageRequest, ReceiveMessageResult, SendMessageBatchRequest,
-        SendMessageBatchRequestEntry, Sqs,
+        DeleteMessageBatchRequest, DeleteMessageBatchRequestEntry, ReceiveMessageRequest,
+        ReceiveMessageResult, SendMessageBatchRequest, SendMessageBatchRequestEntry, Sqs,
     },
     serde::Deserialize,
     solana_geyser_sqs::{
-        aws::{S3Client, SqsClient},
-        config::Config,
+        aws::{S3Client, SqsClient, SqsMessageAttributes},
+        config::{AccountsDataCompression, Config},
     },
     std::{
         collections::hash_map::DefaultHasher,
@@ -88,20 +87,17 @@ async fn send_loop(config: Config) -> anyhow::Result<()> {
             .await;
         println!("Put s3 object ({}): {:?}", key, result);
 
+        let mut message_attributes =
+            SqsMessageAttributes::new("compression", AccountsDataCompression::None.as_str());
+        message_attributes.insert("s3", key);
+
         let result = sqs
             .client
             .send_message_batch(SendMessageBatchRequest {
                 entries: vec![SendMessageBatchRequestEntry {
                     id: "0".to_owned(),
                     message_body: "s3".to_owned(),
-                    message_attributes: Some(maplit::hashmap! {
-                    "s3".to_owned() =>
-                        MessageAttributeValue {
-                            data_type: "String".to_owned(),
-                            string_value: Some(key),
-                            ..Default::default()
-                        },
-                    }),
+                    message_attributes: Some(message_attributes.into_inner()),
                     ..Default::default()
                 }],
                 queue_url: sqs.queue_url.clone(),

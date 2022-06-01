@@ -1,6 +1,6 @@
 use {
     super::{
-        aws::{AwsError, S3Client, SqsClient},
+        aws::{AwsError, S3Client, SqsClient, SqsMessageAttributes},
         config::{AccountsDataCompression, Config},
         filter::{AccountsFilter, TransactionsFilter},
         prom::{UploadMessagesStatus, UPLOAD_MESSAGES_TOTAL, UPLOAD_QUEUE_SIZE},
@@ -11,7 +11,7 @@ use {
         stream::{self, StreamExt},
     },
     log::*,
-    rusoto_sqs::{MessageAttributeValue, SendMessageBatchRequestEntry},
+    rusoto_sqs::SendMessageBatchRequestEntry,
     serde::{Deserialize, Serialize},
     serde_json::{json, Value},
     solana_geyser_plugin_interface::geyser_plugin_interface::{
@@ -247,17 +247,27 @@ struct SendMessageWithPayload {
     message: SendMessage,
     s3: bool,
     payload: String,
+    message_attributes: SqsMessageAttributes,
 }
 
 impl SendMessageWithPayload {
     const S3_SIZE: usize = 250;
 
-    fn new(message: SendMessage, payload: String) -> Self {
-        Self {
-            message,
-            s3: payload.len() > SqsClient::REQUEST_LIMIT,
-            payload,
-        }
+    fn new(
+        message: SendMessage,
+        accounts_data_compression: &AccountsDataCompression,
+    ) -> IoResult<Self> {
+        message
+            .payload(accounts_data_compression)
+            .map(|payload| Self {
+                message,
+                s3: payload.len() > SqsClient::REQUEST_LIMIT,
+                payload,
+                message_attributes: SqsMessageAttributes::new(
+                    "compression",
+                    accounts_data_compression.as_str(),
+                ),
+            })
     }
 
     fn payload_size(&self) -> usize {
@@ -457,9 +467,9 @@ impl AwsSqsClient {
             message: SendMessage,
             accounts_data_compression: &AccountsDataCompression,
         ) {
-            match message.payload(accounts_data_compression) {
-                Ok(payload) => {
-                    messages.push_back(SendMessageWithPayload::new(message, payload));
+            match SendMessageWithPayload::new(message, accounts_data_compression) {
+                Ok(message) => {
+                    messages.push_back(message);
                     UPLOAD_QUEUE_SIZE.inc();
                 }
                 Err(error) => {
@@ -759,7 +769,8 @@ impl AwsSqsClient {
                 .filter_map(|(id, message)| {
                     let s3 = if message.s3 { Some(s3.clone()) } else { None };
                     async move {
-                        let (message_body, message_attributes) = match s3 {
+                        let mut message_attributes = message.message_attributes;
+                        let message_body = match s3 {
                             Some(s3) => {
                                 let key = message.message.s3_key();
                                 if let Err(error) = s3
@@ -774,25 +785,17 @@ impl AwsSqsClient {
                                     );
                                     return None;
                                 }
-                                (
-                                    "s3".to_owned(),
-                                    Some(maplit::hashmap! {
-                                        "s3".to_owned() => MessageAttributeValue {
-                                            data_type: "String".to_owned(),
-                                            string_value: Some(key),
-                                            ..Default::default()
-                                        }
-                                    }),
-                                )
+                                message_attributes.insert("s3", key);
+                                "s3".to_owned()
                             }
-                            None => (message.payload, None),
+                            None => message.payload,
                         };
                         Some((
                             message.message,
                             SendMessageBatchRequestEntry {
                                 id: id.to_string(),
                                 message_body,
-                                message_attributes,
+                                message_attributes: Some(message_attributes.into_inner()),
                                 ..Default::default()
                             },
                         ))

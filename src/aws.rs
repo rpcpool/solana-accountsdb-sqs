@@ -14,10 +14,10 @@ use {
     rusoto_s3::{PutObjectError, PutObjectRequest, S3Client as RusotoS3Client, S3},
     rusoto_sqs::{
         BatchResultErrorEntry, GetQueueAttributesError, GetQueueAttributesRequest,
-        SendMessageBatchError, SendMessageBatchRequest, SendMessageBatchRequestEntry, Sqs,
-        SqsClient as RusotoSqsClient,
+        MessageAttributeValue, SendMessageBatchError, SendMessageBatchRequest,
+        SendMessageBatchRequestEntry, Sqs, SqsClient as RusotoSqsClient,
     },
-    std::sync::Arc,
+    std::{collections::HashMap, sync::Arc},
     thiserror::Error,
     tokio::sync::Semaphore,
 };
@@ -37,6 +37,35 @@ pub enum AwsError {
 }
 
 pub type AwsResult<T = ()> = Result<T, AwsError>;
+
+#[derive(Debug, Default)]
+pub struct SqsMessageAttributes {
+    map: HashMap<String, MessageAttributeValue>,
+}
+
+impl SqsMessageAttributes {
+    pub fn new<S1: Into<String>, S2: Into<String>>(key: S1, value: S2) -> Self {
+        let mut attributes = Self::default();
+        attributes.insert(key, value);
+        attributes
+    }
+
+    pub fn insert<S1: Into<String>, S2: Into<String>>(&mut self, key: S1, value: S2) -> &Self {
+        self.map.insert(
+            key.into(),
+            MessageAttributeValue {
+                data_type: "String".to_owned(),
+                string_value: Some(value.into()),
+                ..Default::default()
+            },
+        );
+        self
+    }
+
+    pub fn into_inner(self) -> HashMap<String, MessageAttributeValue> {
+        self.map
+    }
+}
 
 #[derive(derivative::Derivative)]
 #[derivative(Debug, Clone)]

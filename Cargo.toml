@@ -21,7 +21,6 @@ humantime = "2.1.0"
 hyper = { version = "0.14", features = ["server"] }
 lazy_static = "1"
 log = "0.4.14"
-maplit = "1"
 prometheus = "0.13"
 rusoto_core = "0.48"
 rusoto_credential = "0.48"

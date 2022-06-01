@@ -8,7 +8,7 @@ $ cargo build --release
 
 ### Plugin for validator
 
-Plugin config example located in [config.json](config.json). **You need change `libpath` field.**
+Plugin config example located in [config.json](config.json). **You need to change `libpath` field.**
 
 Now you can run validator with plugin:
 
