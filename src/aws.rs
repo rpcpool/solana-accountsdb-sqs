@@ -14,8 +14,8 @@ use {
     rusoto_s3::{PutObjectError, PutObjectRequest, S3Client as RusotoS3Client, S3},
     rusoto_sqs::{
         BatchResultErrorEntry, GetQueueAttributesError, GetQueueAttributesRequest,
-        SendMessageBatchError, SendMessageBatchRequest, SendMessageBatchRequestEntry, Sqs,
-        SqsClient as RusotoSqsClient,
+        MessageAttributeValue, SendMessageBatchError, SendMessageBatchRequest,
+        SendMessageBatchRequestEntry, Sqs, SqsClient as RusotoSqsClient,
     },
     std::sync::Arc,
     thiserror::Error,
@@ -37,6 +37,14 @@ pub enum AwsError {
 }
 
 pub type AwsResult<T = ()> = Result<T, AwsError>;
+
+pub fn create_sqs_attr<S: Into<String>>(value: S) -> MessageAttributeValue {
+    MessageAttributeValue {
+        data_type: "String".to_owned(),
+        string_value: Some(value.into()),
+        ..Default::default()
+    }
+}
 
 #[derive(derivative::Derivative)]
 #[derivative(Debug, Clone)]
