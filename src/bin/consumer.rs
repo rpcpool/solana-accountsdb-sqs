@@ -10,7 +10,7 @@ use {
     },
     serde::Deserialize,
     solana_geyser_sqs::{
-        aws::{create_sqs_attr, S3Client, SqsClient},
+        aws::{S3Client, SqsClient, SqsMessageAttributes},
         config::{AccountsDataCompression, Config},
     },
     std::{
@@ -87,8 +87,9 @@ async fn send_loop(config: Config) -> anyhow::Result<()> {
             .await;
         println!("Put s3 object ({}): {:?}", key, result);
 
-        let mut message_attributes = AccountsDataCompression::None.get_sqs_attributes();
-        message_attributes.insert("s3".to_owned(), create_sqs_attr(key));
+        let mut message_attributes =
+            SqsMessageAttributes::new("compression", AccountsDataCompression::None.as_str());
+        message_attributes.insert("s3", key);
 
         let result = sqs
             .client
@@ -96,7 +97,7 @@ async fn send_loop(config: Config) -> anyhow::Result<()> {
                 entries: vec![SendMessageBatchRequestEntry {
                     id: "0".to_owned(),
                     message_body: "s3".to_owned(),
-                    message_attributes: Some(message_attributes),
+                    message_attributes: Some(message_attributes.into_inner()),
                     ..Default::default()
                 }],
                 queue_url: sqs.queue_url.clone(),

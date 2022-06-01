@@ -1,8 +1,7 @@
 use {
-    super::{aws::create_sqs_attr, sqs::SlotStatus},
+    super::sqs::SlotStatus,
     flate2::{write::GzEncoder, Compression as GzCompression},
     rusoto_core::Region,
-    rusoto_sqs::MessageAttributeValue,
     serde::{de, Deserialize, Deserializer},
     solana_geyser_plugin_interface::geyser_plugin_interface::{
         GeyserPluginError, Result as PluginResult,
@@ -235,13 +234,7 @@ impl AccountsDataCompression {
         })
     }
 
-    pub fn get_sqs_attributes(&self) -> HashMap<String, MessageAttributeValue> {
-        let mut map = HashMap::new();
-        map.insert("compression".to_owned(), create_sqs_attr(self.as_str()));
-        map
-    }
-
-    fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         match *self {
             AccountsDataCompression::None => "none",
             AccountsDataCompression::Zstd { .. } => "zstd",

@@ -1,6 +1,6 @@
 use {
     super::{
-        aws::{create_sqs_attr, AwsError, S3Client, SqsClient},
+        aws::{AwsError, S3Client, SqsClient, SqsMessageAttributes},
         config::{AccountsDataCompression, Config},
         filter::{AccountsFilter, TransactionsFilter},
         prom::{UploadMessagesStatus, UPLOAD_MESSAGES_TOTAL, UPLOAD_QUEUE_SIZE},
@@ -11,7 +11,7 @@ use {
         stream::{self, StreamExt},
     },
     log::*,
-    rusoto_sqs::{MessageAttributeValue, SendMessageBatchRequestEntry},
+    rusoto_sqs::SendMessageBatchRequestEntry,
     serde::{Deserialize, Serialize},
     serde_json::{json, Value},
     solana_geyser_plugin_interface::geyser_plugin_interface::{
@@ -247,7 +247,7 @@ struct SendMessageWithPayload {
     message: SendMessage,
     s3: bool,
     payload: String,
-    message_attributes: HashMap<String, MessageAttributeValue>,
+    message_attributes: SqsMessageAttributes,
 }
 
 impl SendMessageWithPayload {
@@ -263,7 +263,10 @@ impl SendMessageWithPayload {
                 message,
                 s3: payload.len() > SqsClient::REQUEST_LIMIT,
                 payload,
-                message_attributes: accounts_data_compression.get_sqs_attributes(),
+                message_attributes: SqsMessageAttributes::new(
+                    "compression",
+                    accounts_data_compression.as_str(),
+                ),
             })
     }
 
@@ -782,7 +785,7 @@ impl AwsSqsClient {
                                     );
                                     return None;
                                 }
-                                message_attributes.insert("s3".to_owned(), create_sqs_attr(key));
+                                message_attributes.insert("s3", key);
                                 "s3".to_owned()
                             }
                             None => message.payload,
@@ -792,7 +795,7 @@ impl AwsSqsClient {
                             SendMessageBatchRequestEntry {
                                 id: id.to_string(),
                                 message_body,
-                                message_attributes: Some(message_attributes),
+                                message_attributes: Some(message_attributes.into_inner()),
                                 ..Default::default()
                             },
                         ))
