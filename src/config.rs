@@ -215,6 +215,10 @@ pub enum AccountsDataCompression {
 }
 
 impl AccountsDataCompression {
+    fn gzip_default_level() -> u32 {
+        GzCompression::default().level()
+    }
+
     #[allow(clippy::ptr_arg)]
     pub fn compress<'a>(&self, data: &'a Vec<u8>) -> IoResult<Cow<'a, Vec<u8>>> {
         Ok(match self {
@@ -230,8 +234,12 @@ impl AccountsDataCompression {
         })
     }
 
-    fn gzip_default_level() -> u32 {
-        GzCompression::default().level()
+    pub fn as_str(&self) -> &str {
+        match *self {
+            AccountsDataCompression::None => "none",
+            AccountsDataCompression::Zstd { .. } => "zstd",
+            AccountsDataCompression::Gzip { .. } => "gzip",
+        }
     }
 }
 
