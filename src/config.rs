@@ -265,11 +265,16 @@ impl<'de> Deserialize<'de> for ConfigAccountsFilter {
         #[derive(Debug, Default, PartialEq, Eq, Deserialize)]
         #[serde(default, deny_unknown_fields)]
         struct ConfigAccountsFilterRaw {
-            account: HashSet<String>,
-            owner: HashSet<String>,
-            data_size: HashSet<UsizeStr>,
-            tokenkeg_owner: HashSet<String>,
-            tokenkeg_delegate: HashSet<String>,
+            #[serde(deserialize_with = "deserialize_set_pubkeys")]
+            account: HashSet<Pubkey>,
+            #[serde(deserialize_with = "deserialize_set_pubkeys")]
+            owner: HashSet<Pubkey>,
+            #[serde(deserialize_with = "deserialize_data_size")]
+            data_size: HashSet<usize>,
+            #[serde(deserialize_with = "deserialize_set_pubkeys")]
+            tokenkeg_owner: HashSet<Pubkey>,
+            #[serde(deserialize_with = "deserialize_set_pubkeys")]
+            tokenkeg_delegate: HashSet<Pubkey>,
         }
 
         let raw: ConfigAccountsFilterRaw = Deserialize::deserialize(deserializer)?;
@@ -279,33 +284,33 @@ impl<'de> Deserialize<'de> for ConfigAccountsFilter {
             ));
         }
 
-        let mut filter = ConfigAccountsFilter {
-            data_size: raw.data_size.into_iter().map(|v| v.value).collect(),
-            ..Default::default()
-        };
-
-        for pubkey in raw.account.into_iter() {
-            let pubkey = pubkey.parse().map_err(de::Error::custom)?;
-            filter.account.insert(pubkey);
-        }
-
-        for pubkey in raw.owner.into_iter() {
-            let pubkey = pubkey.parse().map_err(de::Error::custom)?;
-            filter.owner.insert(pubkey);
-        }
-
-        for pubkey in raw.tokenkeg_owner.into_iter() {
-            let pubkey = pubkey.parse().map_err(de::Error::custom)?;
-            filter.tokenkeg_owner.insert(pubkey);
-        }
-
-        for pubkey in raw.tokenkeg_delegate.into_iter() {
-            let pubkey = pubkey.parse().map_err(de::Error::custom)?;
-            filter.tokenkeg_delegate.insert(pubkey);
-        }
-
-        Ok(filter)
+        Ok(ConfigAccountsFilter {
+            account: raw.account,
+            owner: raw.owner,
+            data_size: raw.data_size,
+            tokenkeg_owner: raw.tokenkeg_owner,
+            tokenkeg_delegate: raw.tokenkeg_delegate,
+        })
     }
+}
+
+fn deserialize_data_size<'de, D>(deserializer: D) -> Result<HashSet<usize>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    HashSet::<UsizeStr>::deserialize(deserializer)
+        .map(|set| set.into_iter().map(|v| v.value).collect())
+}
+
+fn deserialize_set_pubkeys<'de, D>(deserializer: D) -> Result<HashSet<Pubkey>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    HashSet::<&str>::deserialize(deserializer).and_then(|set| {
+        set.into_iter()
+            .map(|pubkey| pubkey.parse().map_err(de::Error::custom))
+            .collect()
+    })
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -330,8 +335,10 @@ impl<'de> Deserialize<'de> for ConfigTransactionsAccountsFilter {
         #[derive(Debug, Default, PartialEq, Eq, Deserialize)]
         #[serde(default, deny_unknown_fields)]
         struct ConfigTransactionsAccountsFilterRaw {
-            include: HashSet<String>,
-            exclude: HashSet<String>,
+            #[serde(deserialize_with = "deserialize_set_pubkeys")]
+            include: HashSet<Pubkey>,
+            #[serde(deserialize_with = "deserialize_set_pubkeys")]
+            exclude: HashSet<Pubkey>,
         }
 
         let raw: ConfigTransactionsAccountsFilterRaw = Deserialize::deserialize(deserializer)?;
@@ -341,18 +348,9 @@ impl<'de> Deserialize<'de> for ConfigTransactionsAccountsFilter {
             ));
         }
 
-        let mut filter = ConfigTransactionsAccountsFilter::default();
-
-        for pubkey in raw.include.into_iter() {
-            let pubkey = pubkey.parse().map_err(de::Error::custom)?;
-            filter.include.insert(pubkey);
-        }
-
-        for pubkey in raw.exclude.into_iter() {
-            let pubkey = pubkey.parse().map_err(de::Error::custom)?;
-            filter.exclude.insert(pubkey);
-        }
-
-        Ok(filter)
+        Ok(ConfigTransactionsAccountsFilter {
+            include: raw.include,
+            exclude: raw.exclude,
+        })
     }
 }
