@@ -28,14 +28,14 @@ rusoto_s3 = "0.48"
 rusoto_sqs = "0.48"
 serde = { version = "1.0.132", features = ["derive"] }
 serde_json = "1.0.73"
-solana-geyser-plugin-interface = "=1.9.22"
-solana-logger = "=1.9.22"
-solana-sdk = "=1.9.22"
-solana-transaction-status = "=1.9.22"
+solana-geyser-plugin-interface = "=1.10.23"
+solana-logger = "=1.10.23"
+solana-sdk = "=1.10.23"
+solana-transaction-status = "=1.10.23"
 spl-token = "3.2.0"
 thiserror = "1.0.30"
 tokio = { version = "1.15.0", features = ["rt-multi-thread", "time", "macros", "io-util"] }
-zstd = "0.9"
+zstd = "0.11.1"
 
 [profile.release]
 codegen-units = 1
