@@ -6,6 +6,8 @@ use {
             UPLOAD_SQS_TOTAL,
         },
     },
+    hyper::Client,
+    hyper_tls::HttpsConnector,
     rusoto_core::{request::TlsError, ByteStream, Client as RusotoClient, HttpClient, RusotoError},
     rusoto_credential::{
         AutoRefreshingProvider, AwsCredentials, ChainProvider, CredentialsError, ProfileProvider,
@@ -199,7 +201,9 @@ impl S3Client {
 }
 
 fn aws_create_client(config: ConfigAwsAuth) -> AwsResult<RusotoClient> {
-    let request_dispatcher = HttpClient::new()?;
+    let mut builder = Client::builder();
+    builder.pool_max_idle_per_host(0); // Fix: `connection closed before message completed`
+    let request_dispatcher = HttpClient::from_builder(builder, HttpsConnector::new());
     let credentials_provider = AwsCredentialsProvider::new(config)?;
     Ok(RusotoClient::new_with(
         credentials_provider,

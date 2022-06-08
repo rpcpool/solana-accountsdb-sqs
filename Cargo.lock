@@ -2344,6 +2344,7 @@ dependencies = [
  "futures",
  "humantime",
  "hyper",
+ "hyper-tls",
  "lazy_static",
  "log",
  "prometheus",
