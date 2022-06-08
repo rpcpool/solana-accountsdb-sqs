@@ -177,6 +177,8 @@ impl S3Client {
         K: Into<String> + Clone,
         B: Into<ByteStream> + Clone,
     {
+        static HTTP_DISPATCH_ERROR_MESSAGE: &str = "Error during dispatch: error trying to connect: tcp connect error: Connection timed out (os error 110)";
+
         let permit = self.permits.acquire().await.expect("alive");
         UPLOAD_S3_REQUESTS.inc();
         let mut retries = 3;
@@ -189,8 +191,13 @@ impl S3Client {
             };
             match self.client.put_object(input).await {
                 Ok(result) => break Ok(result),
+                Err(RusotoError::HttpDispatch(res))
+                    if retries > 0 && res.to_string() == HTTP_DISPATCH_ERROR_MESSAGE =>
+                {
+                    retries -= 1;
+                }
                 Err(RusotoError::Unknown(res))
-                    if res.status == StatusCode::INTERNAL_SERVER_ERROR && retries > 0 =>
+                    if retries > 0 && res.status == StatusCode::INTERNAL_SERVER_ERROR =>
                 {
                     retries -= 1;
                 }
