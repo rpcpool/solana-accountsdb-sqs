@@ -6,6 +6,7 @@ use {
             UPLOAD_SQS_TOTAL,
         },
     },
+    http::StatusCode,
     hyper::Client,
     hyper_tls::HttpsConnector,
     rusoto_core::{request::TlsError, ByteStream, Client as RusotoClient, HttpClient, RusotoError},
@@ -171,22 +172,31 @@ impl S3Client {
             .map(|_| ())
     }
 
-    pub async fn put_object<K: Into<String>, B: Into<ByteStream>>(
-        self,
-        key: K,
-        body: B,
-    ) -> AwsResult {
+    pub async fn put_object<K, B>(self, key: K, body: B) -> AwsResult
+    where
+        K: Into<String> + Clone,
+        B: Into<ByteStream> + Clone,
+    {
         let permit = self.permits.acquire().await.expect("alive");
         UPLOAD_S3_REQUESTS.inc();
-        let result = self
-            .client
-            .put_object(PutObjectRequest {
-                body: Some(body.into()),
-                bucket: self.bucket,
-                key: key.into(),
+        let mut retries = 3;
+        let result = loop {
+            let input = PutObjectRequest {
+                body: Some(body.clone().into()),
+                bucket: self.bucket.clone(),
+                key: key.clone().into(),
                 ..Default::default()
-            })
-            .await;
+            };
+            match self.client.put_object(input).await {
+                Ok(result) => break Ok(result),
+                Err(RusotoError::Unknown(res))
+                    if res.status == StatusCode::INTERNAL_SERVER_ERROR && retries > 0 =>
+                {
+                    retries -= 1;
+                }
+                Err(error) => break Err(error),
+            }
+        };
         UPLOAD_S3_REQUESTS.dec();
         drop(permit);
 
