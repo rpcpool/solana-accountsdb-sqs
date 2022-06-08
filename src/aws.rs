@@ -162,7 +162,18 @@ impl S3Client {
         })
     }
 
-    pub async fn put_object<B: Into<ByteStream>>(self, key: String, body: B) -> AwsResult {
+    pub async fn check(self) -> AwsResult {
+        self.put_object("startup-check", vec![])
+            .await
+            .map_err(Into::into)
+            .map(|_| ())
+    }
+
+    pub async fn put_object<K: Into<String>, B: Into<ByteStream>>(
+        self,
+        key: K,
+        body: B,
+    ) -> AwsResult {
         let permit = self.permits.acquire().await.expect("alive");
         UPLOAD_S3_REQUESTS.inc();
         let result = self
@@ -170,7 +181,7 @@ impl S3Client {
             .put_object(PutObjectRequest {
                 body: Some(body.into()),
                 bucket: self.bucket,
-                key,
+                key: key.into(),
                 ..Default::default()
             })
             .await;
