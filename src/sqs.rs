@@ -310,6 +310,7 @@ impl AwsSqsClient {
         }
 
         SqsClient::new(config.sqs.clone())?.check().await?;
+        S3Client::new(config.s3.clone())?.check().await?;
 
         let startup_job = Arc::new(AtomicBool::new(true));
         let startup_job_loop = Arc::clone(&startup_job);
