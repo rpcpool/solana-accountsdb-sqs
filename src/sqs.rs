@@ -770,7 +770,7 @@ impl AwsSqsClient {
         let (messages, entries): (Vec<SendMessage>, Vec<_>) =
             stream::iter(messages.into_iter().enumerate())
                 .filter_map(|(id, message)| {
-                    let s3 = if message.s3 { Some(&s3) } else { None };
+                    let s3 = if message.s3 { Some(s3.clone()) } else { None };
                     async move {
                         let mut message_attributes = message.message_attributes;
                         let message_body = match s3 {

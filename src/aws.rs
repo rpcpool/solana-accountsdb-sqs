@@ -6,6 +6,7 @@ use {
             UPLOAD_SQS_TOTAL,
         },
     },
+    futures::future::BoxFuture,
     hyper::Client,
     hyper_tls::HttpsConnector,
     log::*,
@@ -17,8 +18,8 @@ use {
     rusoto_s3::{PutObjectError, PutObjectRequest, S3Client as RusotoS3Client, S3},
     rusoto_sqs::{
         BatchResultErrorEntry, GetQueueAttributesError, GetQueueAttributesRequest,
-        MessageAttributeValue, SendMessageBatchError, SendMessageBatchRequest,
-        SendMessageBatchRequestEntry, Sqs, SqsClient as RusotoSqsClient,
+        MessageAttributeValue, SendMessageBatchRequest, SendMessageBatchRequestEntry, Sqs,
+        SqsClient as RusotoSqsClient,
     },
     std::{collections::HashMap, sync::Arc, time::Duration},
     thiserror::Error,
@@ -33,8 +34,6 @@ pub enum AwsError {
     HttpClientTls(#[from] TlsError),
     #[error("failed to get sqs queue attributes: {0}")]
     SqsGetAttributes(#[from] RusotoError<GetQueueAttributesError>),
-    #[error("failed to send messages to sqs: {0}")]
-    SqsSendMessageBatch(#[from] RusotoError<SendMessageBatchError>),
     #[error("failed to upload payload to s3: {0}")]
     S3PutObject(#[from] RusotoError<PutObjectError>),
 }
@@ -109,16 +108,16 @@ impl SqsClient {
         self,
         entries: Vec<SendMessageBatchRequestEntry>,
     ) -> Vec<BatchResultErrorEntry> {
-        let entries_count = entries.len();
-
         UPLOAD_SQS_REQUESTS.inc();
-        let result = self
-            .client
-            .send_message_batch(SendMessageBatchRequest {
-                entries,
-                queue_url: self.queue_url,
-            })
-            .await;
+        let result = with_retries("sqs", || {
+            let input = SendMessageBatchRequest {
+                entries: entries.clone(),
+                queue_url: self.queue_url.clone(),
+            };
+            let client = self.client.clone();
+            Box::pin(async move { client.send_message_batch(input).await })
+        })
+        .await;
         UPLOAD_SQS_REQUESTS.dec();
 
         let failed = match result {
@@ -130,7 +129,7 @@ impl SqsClient {
                 }
                 failed
             }
-            Err(_error) => (0..entries_count)
+            Err(_error) => (0..entries.len())
                 .map(|id| BatchResultErrorEntry {
                     id: id.to_string(),
                     ..Default::default()
@@ -172,35 +171,24 @@ impl S3Client {
             .map(|_| ())
     }
 
-    pub async fn put_object<K, B>(&self, key: K, body: B) -> AwsResult
+    pub async fn put_object<K, B>(self, key: K, body: B) -> AwsResult
     where
-        K: Into<String> + Clone,
-        B: Into<ByteStream> + Clone,
+        K: Into<String> + Clone + Send,
+        B: Into<ByteStream> + Clone + Send,
     {
         let permit = self.permits.acquire().await.expect("alive");
         UPLOAD_S3_REQUESTS.inc();
-        let mut retries = 3;
-        let result = loop {
+        let result = with_retries("s3", || {
             let input = PutObjectRequest {
                 body: Some(body.clone().into()),
                 bucket: self.bucket.clone(),
                 key: key.clone().into(),
                 ..Default::default()
             };
-            let (retries, err_type, err_text) = match self.client.put_object(input).await {
-                Ok(result) => break Ok(result),
-                Err(RusotoError::HttpDispatch(res)) if retries > 0 => {
-                    retries -= 1;
-                    (retries, "HTTP dispatch error", format!("{:?}", res))
-                }
-                Err(RusotoError::Unknown(res)) if retries > 0 => {
-                    retries -= 1;
-                    (retries, "Internal Server Error", format!("{:?}", res))
-                }
-                Err(error) => break Err(error),
-            };
-            warn!("{} (remained retries: {}): {}", err_type, retries, err_text);
-        };
+            let client = self.client.clone();
+            Box::pin(async move { client.put_object(input).await })
+        })
+        .await;
         UPLOAD_S3_REQUESTS.dec();
         drop(permit);
 
@@ -211,6 +199,31 @@ impl S3Client {
         UPLOAD_S3_TOTAL.with_label_values(&[status.as_str()]).inc();
 
         result.map_err(Into::into).map(|_| ())
+    }
+}
+
+async fn with_retries<'a, T, E, F>(service: &str, make_request: F) -> Result<T, RusotoError<E>>
+where
+    F: Fn() -> BoxFuture<'a, Result<T, RusotoError<E>>>,
+{
+    let mut retries = 3;
+    loop {
+        let (retries, err_type, err_text) = match make_request().await {
+            Ok(result) => break Ok(result),
+            Err(RusotoError::HttpDispatch(res)) if retries > 0 => {
+                retries -= 1;
+                (retries, "HTTP dispatch error", format!("{:?}", res))
+            }
+            Err(RusotoError::Unknown(res)) if retries > 0 => {
+                retries -= 1;
+                (retries, "Internal Server Error", format!("{:?}", res))
+            }
+            Err(error) => break Err(error),
+        };
+        warn!(
+            "{} ({}, remained retries: {}): {}",
+            err_type, service, retries, err_text
+        );
     }
 }
 
