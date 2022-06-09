@@ -173,7 +173,7 @@ impl S3Client {
             .map(|_| ())
     }
 
-    pub async fn put_object<K, B>(self, key: K, body: B) -> AwsResult
+    pub async fn put_object<K, B>(&self, key: K, body: B) -> AwsResult
     where
         K: Into<String> + Clone,
         B: Into<ByteStream> + Clone,
