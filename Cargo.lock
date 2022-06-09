@@ -2342,7 +2342,6 @@ dependencies = [
  "derivative",
  "flate2",
  "futures",
- "http",
  "humantime",
  "hyper",
  "hyper-tls",

@@ -6,7 +6,6 @@ use {
             UPLOAD_SQS_TOTAL,
         },
     },
-    http::StatusCode,
     hyper::Client,
     hyper_tls::HttpsConnector,
     log::*,
@@ -178,11 +177,6 @@ impl S3Client {
         K: Into<String> + Clone,
         B: Into<ByteStream> + Clone,
     {
-        const HTTP_DISPATCH_CONNECTION_CLOSED: &str =
-            "Error during dispatch: connection closed before message completed";
-        const HTTP_DISPATCH_CONNECTION_TIMEDOUT: &str =
-            "Error during dispatch: error trying to connect: tcp connect error: Connection timed out (os error 110)";
-
         let permit = self.permits.acquire().await.expect("alive");
         UPLOAD_S3_REQUESTS.inc();
         let mut retries = 3;
@@ -193,38 +187,19 @@ impl S3Client {
                 key: key.clone().into(),
                 ..Default::default()
             };
-            match self.client.put_object(input).await {
+            let (retries, err_type, err_text) = match self.client.put_object(input).await {
                 Ok(result) => break Ok(result),
-                Err(RusotoError::HttpDispatch(res))
-                    if retries > 0
-                        && matches!(
-                            res.to_string().as_str(),
-                            HTTP_DISPATCH_CONNECTION_CLOSED | HTTP_DISPATCH_CONNECTION_TIMEDOUT
-                        ) =>
-                {
+                Err(RusotoError::HttpDispatch(res)) if retries > 0 => {
                     retries -= 1;
-                    warn!(
-                        "HTTP dispatch error (remained retries: {}): {:?}",
-                        retries, res
-                    );
+                    (retries, "HTTP dispatch error", format!("{:?}", res))
                 }
-                Err(RusotoError::Unknown(res))
-                    if retries > 0
-                        && matches!(
-                            res.status,
-                            // 500: InternalError, We encountered an internal error. Please try again.
-                            // 503: SlowDown, Please reduce your request rate.
-                            StatusCode::INTERNAL_SERVER_ERROR | StatusCode::SERVICE_UNAVAILABLE
-                        ) =>
-                {
+                Err(RusotoError::Unknown(res)) if retries > 0 => {
                     retries -= 1;
-                    warn!(
-                        "Internal Server Error (remained retries: {}): {:?}",
-                        retries, res
-                    );
+                    (retries, "Internal Server Error", format!("{:?}", res))
                 }
                 Err(error) => break Err(error),
-            }
+            };
+            warn!("{} (remained retries: {}): {}", err_type, retries, err_text);
         };
         UPLOAD_S3_REQUESTS.dec();
         drop(permit);
