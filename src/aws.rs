@@ -209,7 +209,13 @@ impl S3Client {
                     );
                 }
                 Err(RusotoError::Unknown(res))
-                    if retries > 0 && res.status == StatusCode::INTERNAL_SERVER_ERROR =>
+                    if retries > 0
+                        && matches!(
+                            res.status,
+                            // 500: InternalError, We encountered an internal error. Please try again.
+                            // 503: SlowDown, Please reduce your request rate.
+                            StatusCode::INTERNAL_SERVER_ERROR | StatusCode::SERVICE_UNAVAILABLE
+                        ) =>
                 {
                     retries -= 1;
                     warn!(
