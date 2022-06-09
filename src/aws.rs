@@ -6,6 +6,10 @@ use {
             UPLOAD_SQS_TOTAL,
         },
     },
+    http::StatusCode,
+    hyper::Client,
+    hyper_tls::HttpsConnector,
+    log::*,
     rusoto_core::{request::TlsError, ByteStream, Client as RusotoClient, HttpClient, RusotoError},
     rusoto_credential::{
         AutoRefreshingProvider, AwsCredentials, ChainProvider, CredentialsError, ProfileProvider,
@@ -17,7 +21,7 @@ use {
         MessageAttributeValue, SendMessageBatchError, SendMessageBatchRequest,
         SendMessageBatchRequestEntry, Sqs, SqsClient as RusotoSqsClient,
     },
-    std::{collections::HashMap, sync::Arc},
+    std::{collections::HashMap, sync::Arc, time::Duration},
     thiserror::Error,
     tokio::sync::Semaphore,
 };
@@ -169,22 +173,59 @@ impl S3Client {
             .map(|_| ())
     }
 
-    pub async fn put_object<K: Into<String>, B: Into<ByteStream>>(
-        self,
-        key: K,
-        body: B,
-    ) -> AwsResult {
+    pub async fn put_object<K, B>(&self, key: K, body: B) -> AwsResult
+    where
+        K: Into<String> + Clone,
+        B: Into<ByteStream> + Clone,
+    {
+        const HTTP_DISPATCH_CONNECTION_CLOSED: &str =
+            "Error during dispatch: connection closed before message completed";
+        const HTTP_DISPATCH_CONNECTION_TIMEDOUT: &str =
+            "Error during dispatch: error trying to connect: tcp connect error: Connection timed out (os error 110)";
+
         let permit = self.permits.acquire().await.expect("alive");
         UPLOAD_S3_REQUESTS.inc();
-        let result = self
-            .client
-            .put_object(PutObjectRequest {
-                body: Some(body.into()),
-                bucket: self.bucket,
-                key: key.into(),
+        let mut retries = 3;
+        let result = loop {
+            let input = PutObjectRequest {
+                body: Some(body.clone().into()),
+                bucket: self.bucket.clone(),
+                key: key.clone().into(),
                 ..Default::default()
-            })
-            .await;
+            };
+            match self.client.put_object(input).await {
+                Ok(result) => break Ok(result),
+                Err(RusotoError::HttpDispatch(res))
+                    if retries > 0
+                        && matches!(
+                            res.to_string().as_str(),
+                            HTTP_DISPATCH_CONNECTION_CLOSED | HTTP_DISPATCH_CONNECTION_TIMEDOUT
+                        ) =>
+                {
+                    retries -= 1;
+                    warn!(
+                        "HTTP dispatch error (remained retries: {}): {:?}",
+                        retries, res
+                    );
+                }
+                Err(RusotoError::Unknown(res))
+                    if retries > 0
+                        && matches!(
+                            res.status,
+                            // 500: InternalError, We encountered an internal error. Please try again.
+                            // 503: SlowDown, Please reduce your request rate.
+                            StatusCode::INTERNAL_SERVER_ERROR | StatusCode::SERVICE_UNAVAILABLE
+                        ) =>
+                {
+                    retries -= 1;
+                    warn!(
+                        "Internal Server Error (remained retries: {}): {:?}",
+                        retries, res
+                    );
+                }
+                Err(error) => break Err(error),
+            }
+        };
         UPLOAD_S3_REQUESTS.dec();
         drop(permit);
 
@@ -199,7 +240,12 @@ impl S3Client {
 }
 
 fn aws_create_client(config: ConfigAwsAuth) -> AwsResult<RusotoClient> {
-    let request_dispatcher = HttpClient::new()?;
+    let mut builder = Client::builder();
+    builder.pool_idle_timeout(Duration::from_secs(10));
+    builder.pool_max_idle_per_host(10);
+    // Fix: `connection closed before message completed` but introduce `dns error: failed to lookup address information`
+    // builder.pool_max_idle_per_host(0);
+    let request_dispatcher = HttpClient::from_builder(builder, HttpsConnector::new());
     let credentials_provider = AwsCredentialsProvider::new(config)?;
     Ok(RusotoClient::new_with(
         credentials_provider,
