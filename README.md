@@ -96,10 +96,14 @@ Filter accounts:
 
 ```json
 {
-    "account": [
-        "83astBRguLMdt2h5U1Tpdq5tjFoJ6noeGwaY3mDLVcri",
-        "vines1vzrYbzLMRdu58ou5XTby4qAqVRLmqo36NKPTg"
-    ]
+    "accounts": {
+        "filter-by-account": {
+            "account": [
+                "83astBRguLMdt2h5U1Tpdq5tjFoJ6noeGwaY3mDLVcri",
+                "vines1vzrYbzLMRdu58ou5XTby4qAqVRLmqo36NKPTg"
+            ]
+        }
+    }
 }
 ```
 
@@ -107,8 +111,12 @@ Filter accounts with `owner` `Vote111111111111111111111111111111111111111` and s
 
 ```json
 {
-    "owner": ["Vote111111111111111111111111111111111111111"],
-    "data_size": [128]
+    "accounts": {
+        "filter-by-owner-and-size": {
+            "owner": ["Vote111111111111111111111111111111111111111"],
+            "data_size": [128]
+        }
+    }
 }
 ```
 
@@ -116,18 +124,22 @@ Filter accounts with size 256:
 
 ```json
 {
-    "data_size": [256]
+    "accounts": {
+        "filter-by-size": {
+            "data_size": [256]
+        }
+    }
 }
 ```
 
 ```json
 {
-    "tokenkeg_owner": [
-        "GUfCR9mK6azb9vcpsxgXyj7XRPAKJd4KMHTTVvtncGgp"
-    ],
-    "tokenkeg_delegate": [
-        "1BWutmTvYPwDtmw9abTkS4Ssr8no61spGAvW1X6NDix"
-    ]
+    "accounts": {
+        "filter-by-owner-and-delegate": {
+            "tokenkeg_owner": ["GUfCR9mK6azb9vcpsxgXyj7XRPAKJd4KMHTTVvtncGgp"],
+            "tokenkeg_delegate": ["1BWutmTvYPwDtmw9abTkS4Ssr8no61spGAvW1X6NDix"]
+        }
+    }
 }
 ```
 
@@ -136,12 +148,13 @@ Filter accounts with size 256:
 ```json
 {
     "transactions": {
-        "enabled": true,
-        "vote": false,
-        "failed": false,
-        "accounts": {
-            "include": [],
-            "exclude": []
+        "all-txs": {
+            "vote": false,
+            "failed": false,
+            "accounts": {
+                "include": [],
+                "exclude": []
+            }
         }
     }
 }
@@ -172,17 +185,15 @@ Message matching a tokenkeg filter:
 
 ```json
 {
+    "type": "account",
+    "filters": ["my-filter-1", "my-filter-2"],
     "data": "B7cGehJ8vTDz6yS3Dy2+/irpr0uFNvJGOk1/J8Go5mCXh3ML3zliZHwPURW1a39T5sRm3WJ4Kjw7jIIruUXOmAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     "executable": false,
-    "filters": [
-        "my-filter-1", "my-filter-2"
-    ],
     "lamports": 2039280,
     "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
     "pubkey": "3dcHyQ4SjMqgDjr2Maeq5HrgiuWRzRqovJxb4bWMmyxh",
     "rent_epoch": 285,
     "slot": 123309601,
-    "type": "account",
     "write_version": 236563574827
 }
 ```
@@ -191,6 +202,8 @@ Message matching a transaction filter:
 
 ```json
 {
+    "type": "transaction",
+    "filters": ["all-txs"],
     "meta": {
         "err": null,
         "fee": 10000,
@@ -210,7 +223,6 @@ Message matching a transaction filter:
     },
     "signature": "5k6VtaMh9iTifgZ5pNTm31T4BCobMeAFXvxDjsYpTjPLAVhgMPvwYRaMg5yaxHAqtjDa2o5bFwx4NFcuASoMxFz",
     "slot": 621,
-    "transaction": "AgQXFwSYxFH87h7wrfgTOGKkB7cp0ALUn/sa+ZIC0BtEZfC0izqw8nSrHSsTgJyR3UopMS/il7Sw7/TCGatw/AGoeHVRKjzcouhH1sOcO8jPd8DUZUjjkSCxCQsoGev+EiamdRH76HINb1jmwSsRZy5ltQDtehV/GACjf6YsI8IGAgADBWq/1tY1Q0Uxay2cZ2AuZ6ns5oPAK6d7x+QITzsrbAqGeD6V2vys7Aji1g5puZKmytQC/polXFV7zhON6w8wt0kGp9UXGS8Kr8byZeP7d8x62oLFKdC+OxNuLQBVIAAAAAan1RcYx3TJKFZjmGkdXraLXrijm0ttXHNVWyEAAAAAB2FIHTV0dLt8TXYk69O9s9g1XnPREEP8DaNTgAAAAABknYvFYW4mcQxPTajheD5ptJrxqhd0jf4UN3jqnQ+99AEEBAECAwE9AgAAAAEAAAAAAAAAbAIAAAAAAADZBHfCuXX27yHwPoK7eTXB5FG8qIhJX8RSiTsCsF4KJwEbfFZiAAAAAA==",
-    "type": "transaction"
+    "transaction": "AgQXFwSYxFH87h7wrfgTOGKkB7cp0ALUn/sa+ZIC0BtEZfC0izqw8nSrHSsTgJyR3UopMS/il7Sw7/TCGatw/AGoeHVRKjzcouhH1sOcO8jPd8DUZUjjkSCxCQsoGev+EiamdRH76HINb1jmwSsRZy5ltQDtehV/GACjf6YsI8IGAgADBWq/1tY1Q0Uxay2cZ2AuZ6ns5oPAK6d7x+QITzsrbAqGeD6V2vys7Aji1g5puZKmytQC/polXFV7zhON6w8wt0kGp9UXGS8Kr8byZeP7d8x62oLFKdC+OxNuLQBVIAAAAAan1RcYx3TJKFZjmGkdXraLXrijm0ttXHNVWyEAAAAAB2FIHTV0dLt8TXYk69O9s9g1XnPREEP8DaNTgAAAAABknYvFYW4mcQxPTajheD5ptJrxqhd0jf4UN3jqnQ+99AEEBAECAwE9AgAAAAEAAAAAAAAAbAIAAAAAAADZBHfCuXX27yHwPoK7eTXB5FG8qIhJX8RSiTsCsF4KJwEbfFZiAAAAAA=="
 }
 ```
