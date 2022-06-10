@@ -3,7 +3,9 @@ use {
         aws::{AwsError, S3Client, SqsClient, SqsMessageAttributes},
         config::{AccountsDataCompression, Config},
         filter::{AccountsFilter, TransactionsFilter},
-        prom::{UploadMessagesStatus, UPLOAD_MESSAGES_TOTAL, UPLOAD_QUEUE_SIZE},
+        prom::{
+            UploadMessagesStatus, UPLOAD_MESSAGES_TOTAL, UPLOAD_MISSIED_INFO, UPLOAD_QUEUE_SIZE,
+        },
     },
     arrayref::array_ref,
     futures::{
@@ -626,9 +628,75 @@ impl AwsSqsClient {
 
         // Handle messages
         let send_jobs = Arc::new(Semaphore::new(sqs_max_requests));
+        let mut waited_slot = None;
         let mut status_current_slot = 0;
         let mut account_current_slot = 0;
         let mut transaction_current_slot = 0;
+
+        macro_rules! handle_messages {
+            ($slot:ident) => {
+                waited_slot = None;
+
+                // Remove outdated data (keep 320 slots)
+                if let Some(min_slot) = $slot.checked_sub(320) {
+                    remove_outdated_slots(&mut accounts, min_slot);
+                    remove_outdated_slots(&mut tokenkeg_owner_accounts_hist, min_slot);
+                    remove_outdated_slots(&mut tokenkeg_delegate_accounts_hist, min_slot);
+                    remove_outdated_slots(&mut transactions, min_slot);
+                    remove_outdated_slots(&mut blocks, min_slot);
+                }
+
+                // Handle reorg
+                for slot in ($slot..=status_current_slot).rev() {
+                    if let Some(hist) = tokenkeg_owner_accounts_hist.remove(&slot) {
+                        tokenkeg_revert(&mut tokenkeg_owner_accounts, hist);
+                    }
+                    if let Some(hist) = tokenkeg_delegate_accounts_hist.remove(&slot) {
+                        tokenkeg_revert(&mut tokenkeg_delegate_accounts, hist);
+                    }
+                }
+
+                match (
+                    accounts.get(&$slot),
+                    transactions.get_mut(&$slot),
+                    blocks.get(&$slot),
+                ) {
+                    (Some(accounts), transactions, Some(block)) => {
+                        let mut txvec = vec![];
+                        let transactions = transactions.unwrap_or_else(|| &mut txvec);
+                        for transaction in transactions.iter_mut() {
+                            transaction.block_time = block.block_time;
+                        }
+
+                        generate_messages(
+                            &mut messages,
+                            accounts,
+                            &accounts_filter,
+                            &mut tokenkeg_owner_accounts,
+                            &mut tokenkeg_delegate_accounts,
+                            tokenkeg_owner_accounts_hist.entry($slot).or_default(),
+                            tokenkeg_delegate_accounts_hist.entry($slot).or_default(),
+                            transactions,
+                            &transactions_filter,
+                            &accounts_data_compression,
+                        );
+                    }
+                    (accounts, transactions, block) => {
+                        error!(
+                            "accounts/transactions/block for slot {} does not exists ({} / {} / {})",
+                            $slot,
+                            accounts.map(|_| "y").unwrap_or_else(|| "n"),
+                            transactions.map(|_| "y").unwrap_or_else(|| "n"),
+                            block.map(|_| "y").unwrap_or_else(|| "n")
+                        );
+                        UPLOAD_MISSIED_INFO.inc();
+                    }
+                }
+
+                status_current_slot = $slot;
+            }
+        }
+
         loop {
             if !messages.is_empty() && send_jobs.available_permits() > 0 {
                 let mut messages_batch_size = 0;
@@ -679,51 +747,16 @@ impl AwsSqsClient {
                                 SlotStatus::Confirmed | SlotStatus::Finalized
                             ));
 
-                            // Remove outdated data (keep 320 slots)
-                            if let Some(min_slot) = slot.checked_sub(320) {
-                                remove_outdated_slots(&mut accounts, min_slot);
-                                remove_outdated_slots(&mut tokenkeg_owner_accounts_hist, min_slot);
-                                remove_outdated_slots(&mut tokenkeg_delegate_accounts_hist, min_slot);
-                                remove_outdated_slots(&mut transactions, min_slot);
-                                remove_outdated_slots(&mut blocks, min_slot);
+                            if let Some(waited) = waited_slot {
+                                error!("new slot {}, without handling previous {}", slot, waited);
+                                UPLOAD_MISSIED_INFO.inc();
                             }
 
-                            // Handle reorg
-                            for slot in (slot..=status_current_slot).rev() {
-                                if let Some(hist) = tokenkeg_owner_accounts_hist.remove(&slot) {
-                                    tokenkeg_revert(&mut tokenkeg_owner_accounts, hist);
-                                }
-                                if let Some(hist) = tokenkeg_delegate_accounts_hist.remove(&slot) {
-                                    tokenkeg_revert(&mut tokenkeg_delegate_accounts, hist);
-                                }
+                            if blocks.contains_key(&slot) {
+                                handle_messages!(slot);
+                            } else {
+                                waited_slot = Some(slot);
                             }
-
-                            match (accounts.get(&slot), transactions.get_mut(&slot), blocks.get(&slot)) {
-                                (Some(accounts), Some(transactions), Some(block)) => {
-                                    for transaction in transactions.iter_mut() {
-                                        transaction.block_time = block.block_time;
-                                    }
-
-                                    generate_messages(
-                                        &mut messages,
-                                        accounts,
-                                        &accounts_filter,
-                                        &mut tokenkeg_owner_accounts,
-                                        &mut tokenkeg_delegate_accounts,
-                                        tokenkeg_owner_accounts_hist.entry(slot).or_default(),
-                                        tokenkeg_delegate_accounts_hist.entry(slot).or_default(),
-                                        transactions,
-                                        &transactions_filter,
-                                        &accounts_data_compression
-                                    );
-                                }
-                                _ => error!(
-                                    "send_loop error: accounts/transactions/block for slot {} does not exists",
-                                    slot
-                                ),
-                            }
-
-                            status_current_slot = slot;
                         }
                     }
                     Some(Message::UpdateAccount(account)) => {
@@ -745,7 +778,11 @@ impl AwsSqsClient {
                         transactions.get_mut(&transaction.slot).unwrap().push(transaction);
                     }
                     Some(Message::NotifyBlockMetadata(block)) => {
+                        let block_slot = block.slot;
                         blocks.insert(block.slot, block);
+                        if waited_slot == Some(block_slot) {
+                            handle_messages!(block_slot);
+                        }
                     }
                     Some(Message::StartupFinished) => unreachable!(),
                     Some(Message::Shutdown) | None => break,
@@ -770,7 +807,7 @@ impl AwsSqsClient {
         let (messages, entries): (Vec<SendMessage>, Vec<_>) =
             stream::iter(messages.into_iter().enumerate())
                 .filter_map(|(id, message)| {
-                    let s3 = if message.s3 { Some(&s3) } else { None };
+                    let s3 = if message.s3 { Some(s3.clone()) } else { None };
                     async move {
                         let mut message_attributes = message.message_attributes;
                         let message_body = match s3 {

@@ -6,7 +6,7 @@ use {
             UPLOAD_SQS_TOTAL,
         },
     },
-    http::StatusCode,
+    futures::future::BoxFuture,
     hyper::Client,
     hyper_tls::HttpsConnector,
     log::*,
@@ -18,12 +18,12 @@ use {
     rusoto_s3::{PutObjectError, PutObjectRequest, S3Client as RusotoS3Client, S3},
     rusoto_sqs::{
         BatchResultErrorEntry, GetQueueAttributesError, GetQueueAttributesRequest,
-        MessageAttributeValue, SendMessageBatchError, SendMessageBatchRequest,
-        SendMessageBatchRequestEntry, Sqs, SqsClient as RusotoSqsClient,
+        MessageAttributeValue, SendMessageBatchRequest, SendMessageBatchRequestEntry, Sqs,
+        SqsClient as RusotoSqsClient,
     },
     std::{collections::HashMap, sync::Arc, time::Duration},
     thiserror::Error,
-    tokio::sync::Semaphore,
+    tokio::{sync::Semaphore, time::sleep},
 };
 
 #[derive(Debug, Error)]
@@ -34,8 +34,6 @@ pub enum AwsError {
     HttpClientTls(#[from] TlsError),
     #[error("failed to get sqs queue attributes: {0}")]
     SqsGetAttributes(#[from] RusotoError<GetQueueAttributesError>),
-    #[error("failed to send messages to sqs: {0}")]
-    SqsSendMessageBatch(#[from] RusotoError<SendMessageBatchError>),
     #[error("failed to upload payload to s3: {0}")]
     S3PutObject(#[from] RusotoError<PutObjectError>),
 }
@@ -110,16 +108,16 @@ impl SqsClient {
         self,
         entries: Vec<SendMessageBatchRequestEntry>,
     ) -> Vec<BatchResultErrorEntry> {
-        let entries_count = entries.len();
-
         UPLOAD_SQS_REQUESTS.inc();
-        let result = self
-            .client
-            .send_message_batch(SendMessageBatchRequest {
-                entries,
-                queue_url: self.queue_url,
-            })
-            .await;
+        let result = with_retries("sqs", ExponentialBackoff::default(), || {
+            let input = SendMessageBatchRequest {
+                entries: entries.clone(),
+                queue_url: self.queue_url.clone(),
+            };
+            let client = self.client.clone();
+            Box::pin(async move { client.send_message_batch(input).await })
+        })
+        .await;
         UPLOAD_SQS_REQUESTS.dec();
 
         let failed = match result {
@@ -131,7 +129,7 @@ impl SqsClient {
                 }
                 failed
             }
-            Err(_error) => (0..entries_count)
+            Err(_error) => (0..entries.len())
                 .map(|id| BatchResultErrorEntry {
                     id: id.to_string(),
                     ..Default::default()
@@ -173,59 +171,24 @@ impl S3Client {
             .map(|_| ())
     }
 
-    pub async fn put_object<K, B>(&self, key: K, body: B) -> AwsResult
+    pub async fn put_object<K, B>(self, key: K, body: B) -> AwsResult
     where
-        K: Into<String> + Clone,
-        B: Into<ByteStream> + Clone,
+        K: Into<String> + Clone + Send,
+        B: Into<ByteStream> + Clone + Send,
     {
-        const HTTP_DISPATCH_CONNECTION_CLOSED: &str =
-            "Error during dispatch: connection closed before message completed";
-        const HTTP_DISPATCH_CONNECTION_TIMEDOUT: &str =
-            "Error during dispatch: error trying to connect: tcp connect error: Connection timed out (os error 110)";
-
         let permit = self.permits.acquire().await.expect("alive");
         UPLOAD_S3_REQUESTS.inc();
-        let mut retries = 3;
-        let result = loop {
+        let result = with_retries("s3", ExponentialBackoff::default(), || {
             let input = PutObjectRequest {
                 body: Some(body.clone().into()),
                 bucket: self.bucket.clone(),
                 key: key.clone().into(),
                 ..Default::default()
             };
-            match self.client.put_object(input).await {
-                Ok(result) => break Ok(result),
-                Err(RusotoError::HttpDispatch(res))
-                    if retries > 0
-                        && matches!(
-                            res.to_string().as_str(),
-                            HTTP_DISPATCH_CONNECTION_CLOSED | HTTP_DISPATCH_CONNECTION_TIMEDOUT
-                        ) =>
-                {
-                    retries -= 1;
-                    warn!(
-                        "HTTP dispatch error (remained retries: {}): {:?}",
-                        retries, res
-                    );
-                }
-                Err(RusotoError::Unknown(res))
-                    if retries > 0
-                        && matches!(
-                            res.status,
-                            // 500: InternalError, We encountered an internal error. Please try again.
-                            // 503: SlowDown, Please reduce your request rate.
-                            StatusCode::INTERNAL_SERVER_ERROR | StatusCode::SERVICE_UNAVAILABLE
-                        ) =>
-                {
-                    retries -= 1;
-                    warn!(
-                        "Internal Server Error (remained retries: {}): {:?}",
-                        retries, res
-                    );
-                }
-                Err(error) => break Err(error),
-            }
-        };
+            let client = self.client.clone();
+            Box::pin(async move { client.put_object(input).await })
+        })
+        .await;
         UPLOAD_S3_REQUESTS.dec();
         drop(permit);
 
@@ -236,6 +199,73 @@ impl S3Client {
         UPLOAD_S3_TOTAL.with_label_values(&[status.as_str()]).inc();
 
         result.map_err(Into::into).map(|_| ())
+    }
+}
+
+#[derive(Debug)]
+struct ExponentialBackoff {
+    current: Duration,
+    retries: u8,
+    factor: u32,
+}
+
+impl Default for ExponentialBackoff {
+    fn default() -> Self {
+        // In milliseconds: 1 2 4 8 16
+        ExponentialBackoff {
+            current: Duration::from_millis(1),
+            retries: 5,
+            factor: 2,
+        }
+    }
+}
+
+impl Iterator for ExponentialBackoff {
+    type Item = Duration;
+
+    fn next(&mut self) -> Option<Duration> {
+        if self.retries == 0 {
+            return None;
+        }
+        self.retries -= 1;
+
+        match (self.current, self.current.checked_mul(self.factor)) {
+            (delay, Some(new_delay)) => {
+                self.current = new_delay;
+                Some(delay)
+            }
+            _ => None,
+        }
+    }
+}
+
+async fn with_retries<'a, T, E, F>(
+    service: &str,
+    mut backoff: ExponentialBackoff,
+    make_request: F,
+) -> Result<T, RusotoError<E>>
+where
+    F: Fn() -> BoxFuture<'a, Result<T, RusotoError<E>>>,
+{
+    let mut attempt = 0;
+    loop {
+        let next_delay = backoff.next();
+        let (err_type, err_text) = match make_request().await {
+            Ok(result) => break Ok(result),
+            Err(RusotoError::HttpDispatch(res)) if next_delay.is_some() => {
+                ("HTTP dispatch error", format!("{:?}", res))
+            }
+            Err(RusotoError::Unknown(res)) if next_delay.is_some() => {
+                ("Internal Server Error", format!("{:?}", res))
+            }
+            Err(error) => break Err(error),
+        };
+        attempt += 1;
+        warn!(
+            "{} ({}, attempt: {}): {}",
+            err_type, service, attempt, err_text
+        );
+        sleep(next_delay.unwrap()).await;
     }
 }
 
