@@ -168,7 +168,7 @@ enum Message {
 enum SendMessage {
     Slot((SlotStatus, u64)),
     Account((ReplicaAccountInfo, Vec<String>)),
-    Transaction(ReplicaTransactionInfo),
+    Transaction((ReplicaTransactionInfo, Vec<String>)),
 }
 
 impl SendMessage {
@@ -191,8 +191,9 @@ impl SendMessage {
                 "write_version": account.write_version,
                 "slot": account.slot,
             }),
-            SendMessage::Transaction(transaction) => json!({
+            SendMessage::Transaction((transaction, filters)) => json!({
                 "type": "transaction",
+                "filters": filters,
                 "signature": transaction.signature.to_string(),
                 "transaction": base64::encode(&bincode::serialize(&transaction.transaction).unwrap()),
                 "meta": transaction.meta,
@@ -215,7 +216,7 @@ impl SendMessage {
                     account.slot, account.pubkey, account.write_version
                 )
             }
-            Self::Transaction(transaction) => {
+            Self::Transaction((transaction, _filters)) => {
                 warn!("Transaction is not expected to be uploaded to S3");
                 format!("transaction-{}-{}", transaction.slot, transaction.signature)
             }
@@ -233,7 +234,7 @@ impl SendMessage {
                 value["slot"] = json!(account.slot);
                 value["write_version"] = json!(account.write_version);
             }
-            SendMessage::Transaction(transaction) => {
+            SendMessage::Transaction((transaction, _filters)) => {
                 value["signature"] = json!(transaction.signature.to_string());
                 value["slot"] = json!(transaction.slot);
             }
@@ -599,10 +600,11 @@ impl AwsSqsClient {
             }
 
             for transaction in transactions {
-                if transactions_filter.contains(transaction) {
+                let filters = transactions_filter.get_filters(transaction);
+                if !filters.is_empty() {
                     add_message(
                         messages,
-                        SendMessage::Transaction(transaction.clone()),
+                        SendMessage::Transaction((transaction.clone(), filters)),
                         accounts_data_compression,
                     );
                 }

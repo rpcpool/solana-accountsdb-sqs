@@ -32,7 +32,7 @@ pub struct Config {
     #[serde(rename = "accounts")]
     pub accounts_filters: HashMap<String, ConfigAccountsFilter>,
     #[serde(rename = "transactions")]
-    pub transactions_filter: ConfigTransactionsFilter,
+    pub transactions_filter: HashMap<String, ConfigTransactionsFilter>,
 }
 
 impl Config {
@@ -243,7 +243,8 @@ impl AccountsDataCompression {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct ConfigSlots {
     pub enabled: bool,
 }
@@ -313,9 +314,9 @@ where
     })
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct ConfigTransactionsFilter {
-    pub enabled: bool,
     pub vote: bool,
     pub failed: bool,
     pub accounts: ConfigTransactionsAccountsFilter,
