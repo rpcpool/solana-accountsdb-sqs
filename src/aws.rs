@@ -23,7 +23,7 @@ use {
     },
     std::{collections::HashMap, sync::Arc, time::Duration},
     thiserror::Error,
-    tokio::sync::Semaphore,
+    tokio::{sync::Semaphore, time::sleep},
 };
 
 #[derive(Debug, Error)]
@@ -265,6 +265,7 @@ where
             "{} ({}, attempt: {}): {}",
             err_type, service, attempt, err_text
         );
+        sleep(next_delay.unwrap()).await;
     }
 }
 
