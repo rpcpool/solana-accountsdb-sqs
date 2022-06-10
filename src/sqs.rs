@@ -3,7 +3,9 @@ use {
         aws::{AwsError, S3Client, SqsClient, SqsMessageAttributes},
         config::{AccountsDataCompression, Config},
         filter::{AccountsFilter, TransactionsFilter},
-        prom::{UploadMessagesStatus, UPLOAD_MESSAGES_TOTAL, UPLOAD_QUEUE_SIZE},
+        prom::{
+            UploadMessagesStatus, UPLOAD_MESSAGES_TOTAL, UPLOAD_MISSIED_INFO, UPLOAD_QUEUE_SIZE,
+        },
     },
     arrayref::array_ref,
     futures::{
@@ -717,10 +719,10 @@ impl AwsSqsClient {
                                         &accounts_data_compression
                                     );
                                 }
-                                _ => error!(
-                                    "send_loop error: accounts/transactions/block for slot {} does not exists",
-                                    slot
-                                ),
+                                _ => {
+                                    error!("send_loop error: accounts/transactions/block for slot {} does not exists", slot);
+                                    UPLOAD_MISSIED_INFO.inc();
+                                }
                             }
 
                             status_current_slot = slot;

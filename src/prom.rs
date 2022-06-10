@@ -15,6 +15,11 @@ use {
 lazy_static::lazy_static! {
     pub static ref REGISTRY: Registry = Registry::new();
 
+    pub static ref UPLOAD_MISSIED_INFO: IntGauge = IntGauge::new(
+        "upload_missied_info",
+        "Number of slots with missed info (accounts/transactions/block)"
+    ).unwrap();
+
     pub static ref UPLOAD_QUEUE_SIZE: IntGauge = IntGauge::new(
         "upload_queue_size",
         "Number of messages in the queue for upload"
@@ -94,6 +99,7 @@ impl PrometheusService {
                         .expect("collector can't be registered");
                 };
             }
+            register!(UPLOAD_MISSIED_INFO);
             register!(UPLOAD_QUEUE_SIZE);
             register!(UPLOAD_SQS_REQUESTS);
             register!(UPLOAD_SQS_TOTAL);
