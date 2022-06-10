@@ -229,12 +229,12 @@ impl Iterator for ExponentialBackoff {
         }
         self.retries -= 1;
 
-        match self.current.checked_mul(self.factor) {
-            Some(delay) => {
-                self.current = delay;
+        match (self.current, self.current.checked_mul(self.factor)) {
+            (delay, Some(new_delay)) => {
+                self.current = new_delay;
                 Some(delay)
             }
-            None => None,
+            _ => None,
         }
     }
 }
