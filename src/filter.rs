@@ -174,36 +174,40 @@ impl<'a> AccountsFilterMatch<'a> {
 
 #[derive(Debug, Clone)]
 pub struct TransactionsFilter {
-    filter: ConfigTransactionsFilter,
+    filters: HashMap<String, ConfigTransactionsFilter>,
 }
 
 impl TransactionsFilter {
-    pub fn new(filter: ConfigTransactionsFilter) -> Self {
-        Self { filter }
+    pub fn new(filters: HashMap<String, ConfigTransactionsFilter>) -> Self {
+        Self { filters }
     }
 
-    pub fn contains(&self, transaction: &ReplicaTransactionInfo) -> bool {
-        if !self.filter.enabled {
-            return false;
-        }
+    pub fn get_filters(&self, transaction: &ReplicaTransactionInfo) -> Vec<String> {
+        self.filters
+            .iter()
+            .filter_map(|(name, filter)| {
+                if transaction.is_vote && !filter.vote {
+                    return None;
+                }
 
-        if transaction.is_vote && !self.filter.vote {
-            return false;
-        }
+                if transaction.meta.err.is_some() && !filter.failed {
+                    return None;
+                }
 
-        if transaction.meta.err.is_some() && !self.filter.failed {
-            return false;
-        }
+                if !Self::contains_program(filter, transaction) {
+                    return None;
+                }
 
-        if !self.contains_program(transaction) {
-            return false;
-        }
-
-        true
+                Some(name.clone())
+            })
+            .collect()
     }
 
-    fn contains_program(&self, transaction: &ReplicaTransactionInfo) -> bool {
-        let ConfigTransactionsAccountsFilter { include, exclude } = &self.filter.accounts;
+    fn contains_program(
+        filter: &ConfigTransactionsFilter,
+        transaction: &ReplicaTransactionInfo,
+    ) -> bool {
+        let ConfigTransactionsAccountsFilter { include, exclude } = &filter.accounts;
         let mut iter = transaction.transaction.message.account_keys.iter();
 
         if !include.is_empty() {
