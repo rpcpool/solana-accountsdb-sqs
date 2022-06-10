@@ -109,7 +109,7 @@ impl SqsClient {
         entries: Vec<SendMessageBatchRequestEntry>,
     ) -> Vec<BatchResultErrorEntry> {
         UPLOAD_SQS_REQUESTS.inc();
-        let result = with_retries("sqs", || {
+        let result = with_retries("sqs", ExponentialBackoff::default(), || {
             let input = SendMessageBatchRequest {
                 entries: entries.clone(),
                 queue_url: self.queue_url.clone(),
@@ -178,7 +178,7 @@ impl S3Client {
     {
         let permit = self.permits.acquire().await.expect("alive");
         UPLOAD_S3_REQUESTS.inc();
-        let result = with_retries("s3", || {
+        let result = with_retries("s3", ExponentialBackoff::default(), || {
             let input = PutObjectRequest {
                 body: Some(body.clone().into()),
                 bucket: self.bucket.clone(),
@@ -202,27 +202,68 @@ impl S3Client {
     }
 }
 
-async fn with_retries<'a, T, E, F>(service: &str, make_request: F) -> Result<T, RusotoError<E>>
+#[derive(Debug)]
+struct ExponentialBackoff {
+    current: Duration,
+    retries: u8,
+    factor: u32,
+}
+
+impl Default for ExponentialBackoff {
+    fn default() -> Self {
+        // In milliseconds: 1 2 4 8 16
+        ExponentialBackoff {
+            current: Duration::from_millis(1),
+            retries: 5,
+            factor: 2,
+        }
+    }
+}
+
+impl Iterator for ExponentialBackoff {
+    type Item = Duration;
+
+    fn next(&mut self) -> Option<Duration> {
+        if self.retries == 0 {
+            return None;
+        }
+        self.retries -= 1;
+
+        match self.current.checked_mul(self.factor) {
+            Some(delay) => {
+                self.current = delay;
+                Some(delay)
+            }
+            None => None,
+        }
+    }
+}
+
+async fn with_retries<'a, T, E, F>(
+    service: &str,
+    mut backoff: ExponentialBackoff,
+    make_request: F,
+) -> Result<T, RusotoError<E>>
 where
     F: Fn() -> BoxFuture<'a, Result<T, RusotoError<E>>>,
 {
-    let mut retries = 3;
+    let mut attempt = 0;
     loop {
-        let (retries, err_type, err_text) = match make_request().await {
+        let next_delay = backoff.next();
+        let (err_type, err_text) = match make_request().await {
             Ok(result) => break Ok(result),
-            Err(RusotoError::HttpDispatch(res)) if retries > 0 => {
-                retries -= 1;
-                (retries, "HTTP dispatch error", format!("{:?}", res))
+            Err(RusotoError::HttpDispatch(res)) if next_delay.is_some() => {
+                ("HTTP dispatch error", format!("{:?}", res))
             }
-            Err(RusotoError::Unknown(res)) if retries > 0 => {
-                retries -= 1;
-                (retries, "Internal Server Error", format!("{:?}", res))
+            Err(RusotoError::Unknown(res)) if next_delay.is_some() => {
+                ("Internal Server Error", format!("{:?}", res))
             }
             Err(error) => break Err(error),
         };
+        attempt += 1;
         warn!(
-            "{} ({}, remained retries: {}): {}",
-            err_type, service, retries, err_text
+            "{} ({}, attempt: {}): {}",
+            err_type, service, attempt, err_text
         );
     }
 }
