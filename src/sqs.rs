@@ -206,6 +206,26 @@ impl SendMessage {
         .to_string())
     }
 
+    fn payload_short(&self, s3: &str) -> String {
+        match self {
+            SendMessage::Slot(_) => json!({
+                "type": "slot",
+                "s3": s3,
+            }),
+            SendMessage::Account((_account, filters)) => json!({
+                "type": "account",
+                "filters": filters,
+                "s3": s3,
+            }),
+            SendMessage::Transaction((_transaction, filters)) => json!({
+                "type": "transaction",
+                "filters": filters,
+                "s3": s3,
+            }),
+        }
+        .to_string()
+    }
+
     fn s3_key(&self) -> String {
         match self {
             Self::Slot((status, slot)) => {
@@ -266,7 +286,7 @@ impl SendMessageWithPayload {
                 message,
                 s3: payload.len() > SqsClient::REQUEST_LIMIT,
                 payload,
-                message_attributes: SqsMessageAttributes::new(
+                message_attributes: SqsClient::create_message_attributes(
                     "compression",
                     accounts_data_compression.as_str(),
                 ),
@@ -809,7 +829,6 @@ impl AwsSqsClient {
                 .filter_map(|(id, message)| {
                     let s3 = if message.s3 { Some(s3.clone()) } else { None };
                     async move {
-                        let mut message_attributes = message.message_attributes;
                         let message_body = match s3 {
                             Some(s3) => {
                                 let key = message.message.s3_key();
@@ -825,8 +844,7 @@ impl AwsSqsClient {
                                     );
                                     return None;
                                 }
-                                message_attributes.insert("s3", key);
-                                "s3".to_owned()
+                                message.message.payload_short(&key)
                             }
                             None => message.payload,
                         };
@@ -835,7 +853,7 @@ impl AwsSqsClient {
                             SendMessageBatchRequestEntry {
                                 id: id.to_string(),
                                 message_body,
-                                message_attributes: Some(message_attributes.into_inner()),
+                                message_attributes: Some(message.message_attributes),
                                 ..Default::default()
                             },
                         ))

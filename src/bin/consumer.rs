@@ -10,7 +10,7 @@ use {
     },
     serde::Deserialize,
     solana_geyser_sqs::{
-        aws::{S3Client, SqsClient, SqsMessageAttributes},
+        aws::{S3Client, SqsClient},
         config::{AccountsDataCompression, Config},
     },
     std::{
@@ -87,17 +87,16 @@ async fn send_loop(config: Config) -> anyhow::Result<()> {
             .await;
         println!("Put s3 object ({}): {:?}", key, result);
 
-        let mut message_attributes =
-            SqsMessageAttributes::new("compression", AccountsDataCompression::None.as_str());
-        message_attributes.insert("s3", key);
-
         let result = sqs
             .client
             .send_message_batch(SendMessageBatchRequest {
                 entries: vec![SendMessageBatchRequestEntry {
                     id: "0".to_owned(),
-                    message_body: "s3".to_owned(),
-                    message_attributes: Some(message_attributes.into_inner()),
+                    message_body: serde_json::json!({ "s3": key }).to_string(),
+                    message_attributes: Some(SqsClient::create_message_attributes(
+                        "compression",
+                        AccountsDataCompression::None.as_str(),
+                    )),
                     ..Default::default()
                 }],
                 queue_url: sqs.queue_url.clone(),
@@ -132,10 +131,14 @@ async fn receive_loop(args: Args, config: Config) -> anyhow::Result<()> {
                 let messages = stream::iter(messages)
                     .filter_map(|mut message| {
                         let s3 = message
-                            .message_attributes
-                            .as_mut()
-                            .and_then(|map| map.remove("s3"))
-                            .and_then(|attr| attr.string_value)
+                            .body
+                            .as_ref()
+                            .and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok())
+                            .and_then(|value| {
+                                value
+                                    .get("s3")
+                                    .and_then(|value| value.as_str().map(|s| s.to_owned()))
+                            })
                             .map(|key| (s3.clone(), key));
 
                         async move {
