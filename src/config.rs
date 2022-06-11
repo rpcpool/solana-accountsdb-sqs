@@ -28,11 +28,7 @@ pub struct Config {
     pub sqs: ConfigAwsSqs,
     pub s3: ConfigAwsS3,
     pub messages: ConfigMessages,
-    pub slots: ConfigSlots,
-    #[serde(rename = "accounts")]
-    pub accounts_filters: HashMap<String, ConfigAccountsFilter>,
-    #[serde(rename = "transactions")]
-    pub transactions_filter: HashMap<String, ConfigTransactionsFilter>,
+    pub filters: ConfigFilters,
 }
 
 impl Config {
@@ -243,9 +239,17 @@ impl AccountsDataCompression {
     }
 }
 
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ConfigFilters {
+    pub slots: ConfigSlotsFilter,
+    pub accounts: HashMap<String, ConfigAccountsFilter>,
+    pub transactions: HashMap<String, ConfigTransactionsFilter>,
+}
+
 #[derive(Debug, Default, Clone, Copy, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct ConfigSlots {
+pub struct ConfigSlotsFilter {
     pub enabled: bool,
 }
 

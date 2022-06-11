@@ -432,9 +432,9 @@ impl AwsSqsClient {
         let accounts_data_compression = config.messages.accounts_data_compression;
         let sqs = SqsClient::new(config.sqs)?;
         let s3 = S3Client::new(config.s3)?;
-        let is_slot_messages_enabled = config.slots.enabled;
-        let accounts_filter = AccountsFilter::new(config.accounts_filters);
-        let transactions_filter = TransactionsFilter::new(config.transactions_filter);
+        let is_slot_messages_enabled = config.filters.slots.enabled;
+        let accounts_filter = AccountsFilter::new(config.filters.accounts);
+        let transactions_filter = TransactionsFilter::new(config.filters.transactions);
         if config.log.filters {
             log::info!("Sqs slots messages enabled: {}", is_slot_messages_enabled);
             log::info!("Sqs accounts filters: {:#?}", accounts_filter);

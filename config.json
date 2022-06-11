@@ -29,26 +29,28 @@
         "commitment_level": "confirmed",
         "accounts_data_compression": {"algo": "none"}
     },
-    "slots": {
-        "enabled": false
-    },
-    "accounts": {
-        "owner-and-size": {
-            "owner": ["AAACCCDDDEee"],
-            "data_size": [80]
+    "filters": {
+        "slots": {
+            "enabled": false
         },
-        "tokenkeg-owner-and-size": {
-            "tokenkeg_owner": ["GUnde212311"],
-            "data_size": [165]
-        }
-    },
-    "transactions": {
-        "example": {
-            "vote": false,
-            "failed": false,
-            "accounts": {
-                "include": [],
-                "exclude": []
+        "accounts": {
+            "owner-and-size": {
+                "owner": ["AAACCCDDDEee"],
+                "data_size": [80]
+            },
+            "tokenkeg-owner-and-size": {
+                "tokenkeg_owner": ["GUnde212311"],
+                "data_size": [165]
+            }
+        },
+        "transactions": {
+            "example": {
+                "vote": false,
+                "failed": false,
+                "accounts": {
+                    "include": [],
+                    "exclude": []
+                }
             }
         }
     }
