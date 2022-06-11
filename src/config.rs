@@ -1,6 +1,7 @@
 use {
     super::sqs::SlotStatus,
     flate2::{write::GzEncoder, Compression as GzCompression},
+    redis::Client as RedisClient,
     rusoto_core::Region,
     serde::{de, Deserialize, Deserializer},
     solana_geyser_plugin_interface::geyser_plugin_interface::{
@@ -242,9 +243,25 @@ impl AccountsDataCompression {
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ConfigFilters {
+    pub admin: Option<ConfigFiltersAdmin>,
     pub slots: ConfigSlotsFilter,
     pub accounts: HashMap<String, ConfigAccountsFilter>,
     pub transactions: HashMap<String, ConfigTransactionsFilter>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConfigFiltersAdmin {
+    #[serde(deserialize_with = "deserialize_redis_client")]
+    pub redis: RedisClient,
+    pub channel: String,
+}
+
+fn deserialize_redis_client<'de, D>(deserializer: D) -> Result<RedisClient, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    String::deserialize(deserializer)
+        .and_then(|params| RedisClient::open(params).map_err(de::Error::custom))
 }
 
 #[derive(Debug, Default, Clone, Copy, Deserialize)]

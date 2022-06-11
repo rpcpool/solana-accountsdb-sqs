@@ -1,7 +1,8 @@
 use {
     super::{
         config::{
-            ConfigAccountsFilter, ConfigTransactionsAccountsFilter, ConfigTransactionsFilter,
+            ConfigAccountsFilter, ConfigFilters, ConfigTransactionsAccountsFilter,
+            ConfigTransactionsFilter,
         },
         sqs::{ReplicaAccountInfo, ReplicaTransactionInfo},
     },
@@ -13,8 +14,54 @@ use {
     },
 };
 
+#[derive(Debug)]
+pub struct Filters {
+    config: ConfigFilters,
+    accounts: AccountsFilter,
+    transactions: TransactionsFilter,
+}
+
+impl Filters {
+    pub fn new(config: ConfigFilters) -> Self {
+        let accounts = AccountsFilter::new(&config.accounts);
+        let transactions = TransactionsFilter::new(config.transactions.clone());
+        Self {
+            config,
+            accounts,
+            transactions,
+        }
+    }
+
+    pub fn is_slot_messages_enabled(&self) -> bool {
+        self.config.slots.enabled
+    }
+
+    pub fn contains_tokenkeg_owner(&self, owner: &Pubkey) -> bool {
+        self.accounts.tokenkeg_owner.get(owner).is_some()
+    }
+
+    pub fn contains_tokenkeg_delegate(&self, owner: &Pubkey) -> bool {
+        self.accounts.tokenkeg_delegate.get(owner).is_some()
+    }
+
+    pub fn create_accounts_match(&self) -> AccountsFilterMatch {
+        AccountsFilterMatch {
+            accounts_filter: &self.accounts,
+            account: HashSet::new(),
+            owner: HashSet::new(),
+            data_size: HashSet::new(),
+            tokenkeg_owner: HashSet::new(),
+            tokenkeg_delegate: HashSet::new(),
+        }
+    }
+
+    pub fn get_transaction_filters(&self, transaction: &ReplicaTransactionInfo) -> Vec<String> {
+        self.transactions.get_filters(transaction)
+    }
+}
+
 #[derive(Debug, Default, Clone)]
-pub struct AccountsFilter {
+struct AccountsFilter {
     filters: Vec<String>,
     account: HashMap<Pubkey, HashSet<String>>,
     account_required: HashSet<String>,
@@ -29,99 +76,55 @@ pub struct AccountsFilter {
 }
 
 impl AccountsFilter {
-    pub fn new(filters: HashMap<String, ConfigAccountsFilter>) -> Self {
+    pub fn new(filters: &HashMap<String, ConfigAccountsFilter>) -> Self {
         let mut this = Self::default();
-        for (name, filter) in filters {
+        for (name, filter) in filters.iter() {
             this.filters.push(name.clone());
             Self::set(
                 &mut this.account,
                 &mut this.account_required,
-                &name,
-                filter.account,
+                name,
+                &filter.account,
             );
             Self::set(
                 &mut this.owner,
                 &mut this.owner_required,
-                &name,
-                filter.owner,
+                name,
+                &filter.owner,
             );
             Self::set(
                 &mut this.data_size,
                 &mut this.data_size_required,
-                &name,
-                filter.data_size,
+                name,
+                &filter.data_size,
             );
             Self::set(
                 &mut this.tokenkeg_owner,
                 &mut this.tokenkeg_owner_required,
-                &name,
-                filter.tokenkeg_owner,
+                name,
+                &filter.tokenkeg_owner,
             );
             Self::set(
                 &mut this.tokenkeg_delegate,
                 &mut this.tokenkeg_delegate_required,
-                &name,
-                filter.tokenkeg_delegate,
+                name,
+                &filter.tokenkeg_delegate,
             );
         }
         this
     }
 
-    fn set<Q: Hash + Eq>(
+    fn set<Q: Hash + Eq + Clone>(
         map: &mut HashMap<Q, HashSet<String>>,
         set_required: &mut HashSet<String>,
         name: &str,
-        set: HashSet<Q>,
+        set: &HashSet<Q>,
     ) {
         if !set.is_empty() {
             set_required.insert(name.to_string());
-            for key in set.into_iter() {
+            for key in set.iter().cloned() {
                 map.entry(key).or_default().insert(name.to_string());
             }
-        }
-    }
-
-    fn get<'a, Q: Hash + Eq>(map: &'a HashMap<Q, HashSet<String>>, key: &Q) -> HashSet<&'a str> {
-        map.get(key)
-            .map(|set| set.iter().map(|name| name.as_str()).collect::<HashSet<_>>())
-            .unwrap_or_default()
-    }
-
-    pub fn match_account(&self, pubkey: &Pubkey) -> HashSet<&str> {
-        Self::get(&self.account, pubkey)
-    }
-
-    pub fn match_owner(&self, pubkey: &Pubkey) -> HashSet<&str> {
-        Self::get(&self.owner, pubkey)
-    }
-
-    pub fn match_data_size(&self, data_size: usize) -> HashSet<&str> {
-        Self::get(&self.data_size, &data_size)
-    }
-
-    // Any Tokenkeg Account
-    pub fn match_tokenkeg(&self, account: &ReplicaAccountInfo) -> bool {
-        account.owner == spl_token::ID
-            && account.data.len() == SplTokenAccount::LEN
-            && (!self.tokenkeg_owner.is_empty() || !self.tokenkeg_delegate.is_empty())
-    }
-
-    pub fn match_tokenkeg_owner(&self, pubkey: &Pubkey) -> HashSet<&str> {
-        Self::get(&self.tokenkeg_owner, pubkey)
-    }
-
-    pub fn match_tokenkeg_delegate(&self, pubkey: &Pubkey) -> HashSet<&str> {
-        Self::get(&self.tokenkeg_delegate, pubkey)
-    }
-
-    pub fn create_match(&self) -> AccountsFilterMatch {
-        AccountsFilterMatch {
-            accounts_filter: self,
-            account: HashSet::new(),
-            owner: HashSet::new(),
-            data_size: HashSet::new(),
-            tokenkeg_owner: HashSet::new(),
-            tokenkeg_delegate: HashSet::new(),
         }
     }
 }
@@ -137,6 +140,61 @@ pub struct AccountsFilterMatch<'a> {
 }
 
 impl<'a> AccountsFilterMatch<'a> {
+    fn extend<Q: Hash + Eq>(
+        set: &mut HashSet<&'a str>,
+        map: &'a HashMap<Q, HashSet<String>>,
+        key: &Q,
+    ) -> bool {
+        if let Some(names) = map.get(key) {
+            for name in names {
+                set.insert(name);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn match_account(&mut self, pubkey: &Pubkey) -> bool {
+        Self::extend(&mut self.account, &self.accounts_filter.account, pubkey)
+    }
+
+    pub fn match_owner(&mut self, pubkey: &Pubkey) -> bool {
+        Self::extend(&mut self.owner, &self.accounts_filter.owner, pubkey)
+    }
+
+    pub fn match_data_size(&mut self, data_size: usize) -> bool {
+        Self::extend(
+            &mut self.data_size,
+            &self.accounts_filter.data_size,
+            &data_size,
+        )
+    }
+
+    // Any Tokenkeg Account
+    pub fn match_tokenkeg(&self, account: &ReplicaAccountInfo) -> bool {
+        account.owner == spl_token::ID
+            && account.data.len() == SplTokenAccount::LEN
+            && (!self.accounts_filter.tokenkeg_owner.is_empty()
+                || !self.accounts_filter.tokenkeg_delegate.is_empty())
+    }
+
+    pub fn match_tokenkeg_owner(&mut self, pubkey: &Pubkey) -> bool {
+        Self::extend(
+            &mut self.tokenkeg_owner,
+            &self.accounts_filter.tokenkeg_owner,
+            pubkey,
+        )
+    }
+
+    pub fn match_tokenkeg_delegate(&mut self, pubkey: &Pubkey) -> bool {
+        Self::extend(
+            &mut self.tokenkeg_delegate,
+            &self.accounts_filter.tokenkeg_delegate,
+            pubkey,
+        )
+    }
+
     pub fn get_filters(&self) -> Vec<String> {
         self.accounts_filter
             .filters
@@ -173,12 +231,12 @@ impl<'a> AccountsFilterMatch<'a> {
 }
 
 #[derive(Debug, Clone)]
-pub struct TransactionsFilter {
+struct TransactionsFilter {
     filters: HashMap<String, ConfigTransactionsFilter>,
 }
 
 impl TransactionsFilter {
-    pub fn new(filters: HashMap<String, ConfigTransactionsFilter>) -> Self {
+    fn new(filters: HashMap<String, ConfigTransactionsFilter>) -> Self {
         Self { filters }
     }
 

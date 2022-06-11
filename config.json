@@ -30,6 +30,10 @@
         "accounts_data_compression": {"algo": "none"}
     },
     "filters": {
+        "admin": {
+            "redis": "redis://127.0.0.1:6379/",
+            "channel": "admin"
+        },
         "slots": {
             "enabled": false
         },
