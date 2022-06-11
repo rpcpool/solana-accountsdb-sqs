@@ -1,6 +1,6 @@
 use {
     super::{
-        aws::{AwsError, S3Client, SqsClient},
+        aws::{AwsError, S3Client, SqsClient, SqsMessageAttributes},
         config::{AccountsDataCompression, Config},
         filter::{AccountsFilter, TransactionsFilter},
         prom::{
@@ -13,7 +13,7 @@ use {
         stream::{self, StreamExt},
     },
     log::*,
-    rusoto_sqs::{MessageAttributeValue, SendMessageBatchRequestEntry},
+    rusoto_sqs::SendMessageBatchRequestEntry,
     serde::{Deserialize, Serialize},
     serde_json::{json, Value},
     solana_geyser_plugin_interface::geyser_plugin_interface::{
@@ -270,7 +270,7 @@ struct SendMessageWithPayload {
     message: SendMessage,
     s3: bool,
     payload: String,
-    message_attributes: HashMap<String, MessageAttributeValue>,
+    message_attributes: SqsMessageAttributes,
 }
 
 impl SendMessageWithPayload {

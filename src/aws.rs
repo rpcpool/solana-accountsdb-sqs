@@ -40,6 +40,8 @@ pub enum AwsError {
 
 pub type AwsResult<T = ()> = Result<T, AwsError>;
 
+pub type SqsMessageAttributes = HashMap<String, MessageAttributeValue>;
+
 #[derive(derivative::Derivative)]
 #[derivative(Debug, Clone)]
 pub struct SqsClient {
@@ -118,7 +120,7 @@ impl SqsClient {
     pub fn create_message_attributes<S1: Into<String>, S2: Into<String>>(
         key: S1,
         value: S2,
-    ) -> HashMap<String, MessageAttributeValue> {
+    ) -> SqsMessageAttributes {
         let mut attributes = HashMap::new();
         attributes.insert(
             key.into(),
