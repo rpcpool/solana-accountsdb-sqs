@@ -11,7 +11,6 @@ use {
     std::{
         borrow::Cow,
         collections::{HashMap, HashSet},
-        fmt,
         fs::read_to_string,
         io::{Result as IoResult, Write},
         net::SocketAddr,
@@ -129,37 +128,21 @@ impl<'de> Deserialize<'de> for UsizeStr {
     where
         D: Deserializer<'de>,
     {
-        struct AnyVisitor;
-
-        impl<'de> de::Visitor<'de> for AnyVisitor {
-            type Value = UsizeStr;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                write!(formatter, "string or number")
-            }
-
-            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                value
-                    .replace('_', "")
-                    .parse::<usize>()
-                    .map_err(de::Error::custom)
-                    .map(|value| UsizeStr { value })
-            }
-
-            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                Ok(UsizeStr {
-                    value: value as usize,
-                })
-            }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Value {
+            Integer(usize),
+            String(String),
         }
 
-        deserializer.deserialize_any(AnyVisitor)
+        match Value::deserialize(deserializer)? {
+            Value::Integer(value) => Ok(UsizeStr { value }),
+            Value::String(value) => value
+                .replace('_', "")
+                .parse::<usize>()
+                .map_err(de::Error::custom)
+                .map(|value| UsizeStr { value }),
+        }
     }
 }
 
