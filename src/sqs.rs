@@ -1,8 +1,8 @@
 use {
-    super::{
+    crate::{
         aws::{AwsError, S3Client, SqsClient, SqsMessageAttributes},
         config::{AccountsDataCompression, Config},
-        filters::Filters,
+        filters::{Filters, FiltersError},
         prom::{
             UploadMessagesStatus, UPLOAD_MESSAGES_TOTAL, UPLOAD_MISSIED_INFO, UPLOAD_QUEUE_SIZE,
         },
@@ -308,6 +308,8 @@ pub enum SqsClientError {
     InvalidCommitmentLevel(SlotStatus),
     #[error("aws error: {0}")]
     Aws(#[from] AwsError),
+    #[error("filters error: {0}")]
+    Filters(#[from] FiltersError),
     #[error("send message through send queue failed: channel is closed")]
     UpdateQueueChannelClosed,
 }
@@ -432,10 +434,7 @@ impl AwsSqsClient {
         let accounts_data_compression = config.messages.accounts_data_compression;
         let sqs = SqsClient::new(config.sqs)?;
         let s3 = S3Client::new(config.s3)?;
-        let filters = Filters::new(config.filters);
-        if config.log.filters {
-            log::info!("Filters: {:#?}", filters);
-        }
+        let filters = Filters::new(config.filters, config.log.filters).await?;
 
         // Save required Tokenkeg Accounts
         let mut tokenkeg_owner_accounts: HashMap<Pubkey, ReplicaAccountInfo> = HashMap::new();
@@ -462,6 +461,7 @@ impl AwsSqsClient {
                     break;
                 }
                 Message::Shutdown => {
+                    filters.shutdown();
                     send_job.store(false, Ordering::Relaxed);
                     return Ok(());
                 }
@@ -510,7 +510,7 @@ impl AwsSqsClient {
 
         // Add new messages for an accounts on commitment_level
         #[allow(clippy::too_many_arguments)]
-        fn generate_messages(
+        async fn generate_messages(
             filters: &Filters,
             messages: &mut LinkedList<SendMessageWithPayload>,
             accounts: &BTreeSet<ReplicaAccountInfo>,
@@ -596,7 +596,7 @@ impl AwsSqsClient {
             }
 
             for transaction in transactions {
-                let filters = filters.get_transaction_filters(transaction);
+                let filters = filters.get_transaction_filters(transaction).await;
                 if !filters.is_empty() {
                     add_message(
                         messages,
@@ -672,7 +672,7 @@ impl AwsSqsClient {
                             tokenkeg_delegate_accounts_hist.entry($slot).or_default(),
                             transactions,
                             &accounts_data_compression,
-                        );
+                        ).await;
                     }
                     (accounts, transactions, block) => {
                         error!(
@@ -786,6 +786,7 @@ impl AwsSqsClient {
             .acquire_many(sqs_max_requests.try_into().expect("valid size"))
             .await
             .expect("alive");
+        filters.shutdown();
         send_job.store(false, Ordering::Relaxed);
         info!("update_loop finished");
 

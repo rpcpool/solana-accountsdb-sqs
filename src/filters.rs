@@ -1,35 +1,117 @@
 use {
-    super::{
+    crate::{
+        admin::{AdminError, ConfigMgmt, ConfigMgmtMsg, ConfigMgmtMsgTransactions},
         config::{
             ConfigAccountsFilter, ConfigFilters, ConfigTransactionsAccountsFilter,
             ConfigTransactionsFilter,
         },
         sqs::{ReplicaAccountInfo, ReplicaTransactionInfo},
     },
+    futures::stream::{Stream, StreamExt},
+    log::*,
     solana_sdk::{program_pack::Pack, pubkey::Pubkey},
     spl_token::state::Account as SplTokenAccount,
     std::{
         collections::{HashMap, HashSet},
         hash::Hash,
+        sync::Arc,
     },
+    thiserror::Error,
+    tokio::sync::{oneshot, Mutex},
 };
+
+#[derive(Debug, Error)]
+pub enum FiltersError {
+    #[error("config management error: {0}")]
+    Admin(#[from] AdminError),
+}
+
+pub type FiltersResult<T = ()> = Result<T, FiltersError>;
 
 #[derive(Debug)]
 pub struct Filters {
     config: ConfigFilters,
     accounts: AccountsFilter,
-    transactions: TransactionsFilter,
+    transactions: Arc<Mutex<TransactionsFilter>>,
+    shutdown: oneshot::Sender<()>,
 }
 
 impl Filters {
-    pub fn new(config: ConfigFilters) -> Self {
+    pub async fn new(mut config: ConfigFilters, logs: bool) -> FiltersResult<Self> {
+        let admin_with_pubsub = match &config.admin {
+            Some(admin_config) => {
+                let (admin, pubsub) = ConfigMgmt::new_with_pubsub(
+                    admin_config.redis.clone(),
+                    &admin_config.channel,
+                    admin_config.lock_key.clone(),
+                )
+                .await?;
+                if let Some(config_key) = &admin_config.config {
+                    config = admin.get_global_config(config_key.clone()).await?;
+                }
+                Some((admin, pubsub))
+            }
+            None => None,
+        };
+
         let accounts = AccountsFilter::new(&config.accounts);
-        let transactions = TransactionsFilter::new(config.transactions.clone());
-        Self {
+        let transactions = Arc::new(Mutex::new(TransactionsFilter::new(
+            config.transactions.clone(),
+        )));
+
+        if logs {
+            info!("Init slots filter: {:?}", config.slots);
+            info!("Init accounts filters: {:?}", accounts);
+            info!("Init transactions filters: {:?}", transactions);
+        }
+
+        let (send, recv) = oneshot::channel();
+        if let Some((admin, pubsub)) = admin_with_pubsub {
+            tokio::spawn(Self::update_loop(
+                admin,
+                pubsub,
+                logs,
+                Arc::clone(&transactions),
+                recv,
+            ));
+        }
+
+        Ok(Self {
             config,
             accounts,
             transactions,
+            shutdown: send,
+        })
+    }
+
+    async fn update_loop(
+        _admin: ConfigMgmt,
+        pubsub: impl Stream<Item = ConfigMgmtMsg>,
+        logs: bool,
+        transactions: Arc<Mutex<TransactionsFilter>>,
+        mut shutdown: oneshot::Receiver<()>,
+    ) {
+        tokio::pin!(pubsub);
+        loop {
+            tokio::select! {
+                msg = pubsub.next() => match msg {
+                    Some(ConfigMgmtMsg::Transactions(msg)) => {
+                        transactions.lock().await.handle_change(msg, logs);
+                    }
+                    None => {
+                        error!("filters changes subscription failed");
+                        break;
+                    }
+                },
+                _ = &mut shutdown => {
+                    break;
+                }
+            }
         }
+    }
+
+    pub fn shutdown(self) {
+        let _ = self.shutdown.send(());
     }
 
     pub fn is_slot_messages_enabled(&self) -> bool {
@@ -55,8 +137,11 @@ impl Filters {
         }
     }
 
-    pub fn get_transaction_filters(&self, transaction: &ReplicaTransactionInfo) -> Vec<String> {
-        self.transactions.get_filters(transaction)
+    pub async fn get_transaction_filters(
+        &self,
+        transaction: &ReplicaTransactionInfo,
+    ) -> Vec<String> {
+        self.transactions.lock().await.get_filters(transaction)
     }
 }
 
@@ -230,6 +315,7 @@ impl<'a> AccountsFilterMatch<'a> {
     }
 }
 
+// TODO: optimize filter (like accounts filter)
 #[derive(Debug, Clone)]
 struct TransactionsFilter {
     filters: HashMap<String, ConfigTransactionsFilter>,
@@ -238,6 +324,26 @@ struct TransactionsFilter {
 impl TransactionsFilter {
     fn new(filters: HashMap<String, ConfigTransactionsFilter>) -> Self {
         Self { filters }
+    }
+
+    fn handle_change(&mut self, msg: ConfigMgmtMsgTransactions, logs: bool) {
+        match msg {
+            ConfigMgmtMsgTransactions::Add { name, config } => {
+                if self.filters.contains_key(&name) {
+                    error!("transactions filter already exists: {}", name);
+                } else {
+                    self.filters.insert(name.clone(), config);
+                    if logs {
+                        info!("transactions filter added: {}", name)
+                    }
+                }
+            }
+            ConfigMgmtMsgTransactions::Remove { name } => {
+                if self.filters.remove(&name).is_some() && logs {
+                    info!("transactions filter removed: {}", name);
+                }
+            }
+        }
     }
 
     pub fn get_filters(&self, transaction: &ReplicaTransactionInfo) -> Vec<String> {

@@ -2,7 +2,7 @@
     "libpath": "libsolana_geyser_sqs.so",
     "log": {
         "level": "info",
-        "filters": true
+        "filters": false
     },
     "prometheus": {
         "address": "0.0.0.0:8999"
@@ -32,7 +32,8 @@
     "filters": {
         "admin": {
             "redis": "redis://127.0.0.1:6379/",
-            "channel": "admin"
+            "channel": "admin",
+            "lock_key": "lock"
         },
         "slots": {
             "enabled": false

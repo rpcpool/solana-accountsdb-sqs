@@ -2411,6 +2411,7 @@ dependencies = [
  "lazy_static",
  "log",
  "prometheus",
+ "rand",
  "redis",
  "rusoto_core",
  "rusoto_credential",
