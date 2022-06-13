@@ -7,7 +7,7 @@ use {
         },
         sqs::{ReplicaAccountInfo, ReplicaTransactionInfo},
     },
-    futures::stream::{Stream, StreamExt},
+    futures::stream::StreamExt,
     log::*,
     solana_sdk::{program_pack::Pack, pubkey::Pubkey},
     spl_token::state::Account as SplTokenAccount,
@@ -38,9 +38,9 @@ pub struct Filters {
 
 impl Filters {
     pub async fn new(mut config: ConfigFilters, logs: bool) -> FiltersResult<Self> {
-        let admin_with_pubsub = match &config.admin {
+        let admin = match &config.admin {
             Some(admin_config) => {
-                let (admin, pubsub) = ConfigMgmt::new_with_pubsub(
+                let admin = ConfigMgmt::new(
                     admin_config.redis.clone(),
                     &admin_config.channel,
                     admin_config.lock_key.clone(),
@@ -49,7 +49,7 @@ impl Filters {
                 if let Some(config_key) = &admin_config.config {
                     config = admin.get_global_config(config_key.clone()).await?;
                 }
-                Some((admin, pubsub))
+                Some(admin)
             }
             None => None,
         };
@@ -66,10 +66,9 @@ impl Filters {
         }
 
         let (send, recv) = oneshot::channel();
-        if let Some((admin, pubsub)) = admin_with_pubsub {
+        if let Some(admin) = admin {
             tokio::spawn(Self::update_loop(
                 admin,
-                pubsub,
                 logs,
                 Arc::clone(&transactions),
                 recv,
@@ -85,16 +84,14 @@ impl Filters {
     }
 
     async fn update_loop(
-        _admin: ConfigMgmt,
-        pubsub: impl Stream<Item = ConfigMgmtMsg>,
+        mut admin: ConfigMgmt,
         logs: bool,
         transactions: Arc<Mutex<TransactionsFilter>>,
         mut shutdown: oneshot::Receiver<()>,
     ) {
-        tokio::pin!(pubsub);
         loop {
             tokio::select! {
-                msg = pubsub.next() => match msg {
+                msg = admin.pubsub.next() => match msg {
                     Some(ConfigMgmtMsg::Transactions(msg)) => {
                         transactions.lock().await.handle_change(msg, logs);
                     }

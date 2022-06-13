@@ -5,7 +5,7 @@ use {
     rand::{distributions::Alphanumeric, thread_rng, Rng},
     redis::{aio::Connection, AsyncCommands, Client as RedisClient, RedisError, Value},
     serde::Deserialize,
-    std::iter,
+    std::{iter, pin::Pin},
     thiserror::Error,
     tokio::time::{sleep, Duration},
 };
@@ -20,31 +20,33 @@ pub enum AdminError {
 
 pub type AdminResult<T = ()> = Result<T, AdminError>;
 
-#[derive(Debug)]
+#[derive(derivative::Derivative)]
+#[derivative(Debug)]
 pub struct ConfigMgmt {
     redis: RedisClient,
     lock_key: String,
+    #[derivative(Debug = "ignore")]
+    pub pubsub: Pin<Box<dyn Stream<Item = ConfigMgmtMsg> + Send + Sync>>,
 }
 
 impl ConfigMgmt {
-    pub async fn new_with_pubsub(
-        redis: RedisClient,
-        channel: &str,
-        lock_key: String,
-    ) -> AdminResult<(Self, impl Stream<Item = ConfigMgmtMsg>)> {
+    pub async fn new(redis: RedisClient, channel: &str, lock_key: String) -> AdminResult<Self> {
         let mut pubsub = redis.get_async_connection().await?.into_pubsub();
         pubsub.subscribe(channel).await?;
-        let messages = pubsub.into_on_message().filter_map(|msg| async move {
-            match serde_json::from_slice(msg.get_payload_bytes()) {
-                Ok(msg) => Some(msg),
-                Err(error) => {
-                    error!("failed to decode config management message: {:?}", error);
-                    None
-                }
-            }
-        });
 
-        Ok((Self { redis, lock_key }, messages))
+        Ok(Self {
+            redis,
+            lock_key,
+            pubsub: Box::pin(pubsub.into_on_message().filter_map(|msg| async move {
+                match serde_json::from_slice(msg.get_payload_bytes()) {
+                    Ok(msg) => Some(msg),
+                    Err(error) => {
+                        error!("failed to decode config management message: {:?}", error);
+                        None
+                    }
+                }
+            })),
+        })
     }
 
     fn get_lock_token() -> String {
