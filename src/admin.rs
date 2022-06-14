@@ -1,9 +1,12 @@
 use {
     crate::config::{ConfigFilters, ConfigTransactionsFilter},
-    futures::stream::{Stream, StreamExt},
+    futures::{
+        future::BoxFuture,
+        stream::{Stream, StreamExt},
+    },
     log::*,
     rand::{distributions::Alphanumeric, thread_rng, Rng},
-    redis::{aio::Connection, AsyncCommands, Client as RedisClient, RedisError, Value},
+    redis::{aio::Connection, AsyncCommands, Client as RedisClient, Pipeline, RedisError, Value},
     serde::Deserialize,
     std::{iter, pin::Pin},
     thiserror::Error,
@@ -57,9 +60,9 @@ impl ConfigMgmt {
             .collect()
     }
 
-    async fn with_lock_key<T, F>(&self, lock_time: Duration, f: F) -> AdminResult<T>
+    async fn read_with_lock_key<T, F>(&self, lock_time: Duration, f: F) -> AdminResult<T>
     where
-        F: for<'a> Fn(&'a mut Connection) -> futures::future::BoxFuture<'a, AdminResult<T>>,
+        F: for<'a> Fn(&'a mut Connection) -> BoxFuture<'a, AdminResult<T>>,
     {
         const UNSET_SCRIPT: &str = r#"
 if redis.call("get", KEYS[1]) == ARGV[1]
@@ -97,9 +100,36 @@ end"#;
         }
     }
 
+    pub async fn write_with_lock_key<F>(&self, f: F) -> AdminResult
+    where
+        F: Fn(&mut Pipeline),
+    {
+        let mut connection = self.redis.get_async_connection().await?;
+        loop {
+            redis::cmd("WATCH")
+                .arg(&self.lock_key)
+                .query_async(&mut connection)
+                .await?;
+
+            let mut pipe = redis::pipe();
+            f(pipe.atomic());
+
+            let result: Value = pipe.query_async(&mut connection).await?;
+            match result {
+                Value::Nil => {
+                    redis::cmd("UNWATCH").query_async(&mut connection).await?;
+                    continue;
+                }
+                _ => break,
+            }
+        }
+
+        Ok(())
+    }
+
     pub async fn get_global_config(&self, config_key: String) -> AdminResult<ConfigFilters> {
         let lock_time = Duration::from_secs(1);
-        self.with_lock_key(lock_time, |connection| {
+        self.read_with_lock_key(lock_time, |connection| {
             let config_key = config_key.clone();
             Box::pin(async move {
                 let data: String = connection.get(config_key).await?;
@@ -114,13 +144,13 @@ end"#;
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "filter_type", rename_all = "snake_case")]
 pub enum ConfigMgmtMsg {
     Transactions(ConfigMgmtMsgTransactions),
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "action", rename_all = "snake_case")]
+#[serde(tag = "filter_action", rename_all = "snake_case")]
 pub enum ConfigMgmtMsgTransactions {
     Add {
         name: String,

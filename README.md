@@ -67,7 +67,7 @@ https://docs.rs/rusoto_credential/latest/rusoto_credential/struct.StaticProvider
 {
     "sqs": {
         "auth": {
-            "credentials_file": "/home/kirill/.aws/credentials",
+            "credentials_file": "/home/user/.aws/credentials",
             "profile": "rpcpool"
         }
     }
