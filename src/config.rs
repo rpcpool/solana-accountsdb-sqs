@@ -238,8 +238,7 @@ pub struct ConfigFiltersAdmin {
     #[serde(deserialize_with = "deserialize_redis_client")]
     pub redis: RedisClient,
     pub channel: String,
-    pub lock_key: String,
-    pub config: Option<String>,
+    pub config: String,
 }
 
 fn deserialize_redis_client<'de, D>(deserializer: D) -> Result<RedisClient, D::Error>

@@ -439,17 +439,18 @@ impl AwsSqsClient {
         // Save required Tokenkeg Accounts
         let mut tokenkeg_owner_accounts: HashMap<Pubkey, ReplicaAccountInfo> = HashMap::new();
         let mut tokenkeg_delegate_accounts: HashMap<Pubkey, ReplicaAccountInfo> = HashMap::new();
+        let accounts_filter = filters.create_accounts_match().await;
         while let Some(message) = rx.recv().await {
             match message {
                 Message::UpdateSlot(_) => unreachable!(),
                 Message::UpdateAccount(account) => {
                     if let Some(owner) = account.token_owner() {
-                        if filters.contains_tokenkeg_owner(&owner) {
+                        if accounts_filter.contains_tokenkeg_owner(&owner) {
                             tokenkeg_owner_accounts.insert(account.pubkey, account.clone());
                         }
                     }
                     if let Some(Some(delegate)) = account.token_delegate() {
-                        if filters.contains_tokenkeg_delegate(&delegate) {
+                        if accounts_filter.contains_tokenkeg_delegate(&delegate) {
                             tokenkeg_delegate_accounts.insert(account.pubkey, account.clone());
                         }
                     }
@@ -461,12 +462,14 @@ impl AwsSqsClient {
                     break;
                 }
                 Message::Shutdown => {
+                    drop(accounts_filter);
                     filters.shutdown();
                     send_job.store(false, Ordering::Relaxed);
                     return Ok(());
                 }
             }
         }
+        drop(accounts_filter);
         info!("startup finished");
 
         // Messages, accounts and tokenkeg history changes
@@ -521,8 +524,9 @@ impl AwsSqsClient {
             transactions: &[ReplicaTransactionInfo],
             accounts_data_compression: &AccountsDataCompression,
         ) {
+            let mut account_filters = filters.create_accounts_match().await;
             for account in accounts {
-                let mut account_filters = filters.create_accounts_match();
+                account_filters.reset();
 
                 account_filters.match_account(&account.pubkey);
                 account_filters.match_owner(&account.owner);
@@ -730,7 +734,7 @@ impl AwsSqsClient {
                 _ = send_jobs_readiness => {},
                 message = rx.recv() => match message {
                     Some(Message::UpdateSlot((status, slot))) => {
-                        if filters.is_slot_messages_enabled() {
+                        if filters.is_slot_messages_enabled().await {
                             add_message(&mut messages, SendMessage::Slot((status, slot)), &accounts_data_compression);
                         }
 

@@ -33,7 +33,7 @@
         "admin": {
             "redis": "redis://127.0.0.1:6379/",
             "channel": "admin",
-            "lock_key": "lock"
+            "config": "config"
         },
         "slots": {
             "enabled": false

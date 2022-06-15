@@ -47,21 +47,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let config = Config::load_from_file(&args.config)?;
 
-    let admin = {
-        let maybe_config = config.filters.admin.as_ref();
-        let config = maybe_config.expect("redis interface should be defined");
-        ConfigMgmt::new(
-            config.redis.clone(),
-            &config.channel,
-            config.lock_key.clone(),
-        )
-        .await?
-    };
-    admin
-        .write_with_lock_key(|pipe| {
-            //
-        })
-        .await?;
+    let admin = ConfigMgmt::new(config.filters.admin.expect("defined admin config")).await?;
 
     Ok(())
 }

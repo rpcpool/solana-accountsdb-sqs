@@ -1,9 +1,9 @@
 use {
     crate::{
-        admin::{AdminError, ConfigMgmt, ConfigMgmtMsg, ConfigMgmtMsgTransactions},
+        admin::{AdminError, ConfigMgmt, ConfigMgmtMsg},
         config::{
-            ConfigAccountsFilter, ConfigFilters, ConfigTransactionsAccountsFilter,
-            ConfigTransactionsFilter,
+            ConfigAccountsFilter, ConfigFilters, ConfigSlotsFilter,
+            ConfigTransactionsAccountsFilter, ConfigTransactionsFilter,
         },
         sqs::{ReplicaAccountInfo, ReplicaTransactionInfo},
     },
@@ -17,7 +17,7 @@ use {
         sync::Arc,
     },
     thiserror::Error,
-    tokio::sync::{oneshot, Mutex},
+    tokio::sync::{oneshot, Mutex, MutexGuard},
 };
 
 #[derive(Debug, Error)]
@@ -30,37 +30,29 @@ pub type FiltersResult<T = ()> = Result<T, FiltersError>;
 
 #[derive(Debug)]
 pub struct Filters {
-    config: ConfigFilters,
-    accounts: AccountsFilter,
+    slots: Arc<Mutex<ConfigSlotsFilter>>,
+    accounts: Arc<Mutex<AccountsFilter>>,
     transactions: Arc<Mutex<TransactionsFilter>>,
     shutdown: oneshot::Sender<()>,
 }
 
 impl Filters {
     pub async fn new(mut config: ConfigFilters, logs: bool) -> FiltersResult<Self> {
-        let admin = match &config.admin {
+        let admin = match config.admin {
             Some(admin_config) => {
-                let admin = ConfigMgmt::new(
-                    admin_config.redis.clone(),
-                    &admin_config.channel,
-                    admin_config.lock_key.clone(),
-                )
-                .await?;
-                if let Some(config_key) = &admin_config.config {
-                    config = admin.get_global_config(config_key.clone()).await?;
-                }
+                let admin = ConfigMgmt::new(admin_config).await?;
+                config = admin.get_global_config().await?;
                 Some(admin)
             }
             None => None,
         };
 
-        let accounts = AccountsFilter::new(&config.accounts);
-        let transactions = Arc::new(Mutex::new(TransactionsFilter::new(
-            config.transactions.clone(),
-        )));
+        let slots = Arc::new(Mutex::new(config.slots));
+        let accounts = Arc::new(Mutex::new(AccountsFilter::new(&config.accounts)));
+        let transactions = Arc::new(Mutex::new(TransactionsFilter::new(config.transactions)));
 
         if logs {
-            info!("Init slots filter: {:?}", config.slots);
+            info!("Init slots filter: {:?}", slots);
             info!("Init accounts filters: {:?}", accounts);
             info!("Init transactions filters: {:?}", transactions);
         }
@@ -69,14 +61,16 @@ impl Filters {
         if let Some(admin) = admin {
             tokio::spawn(Self::update_loop(
                 admin,
-                logs,
-                Arc::clone(&transactions),
                 recv,
+                logs,
+                Arc::clone(&slots),
+                Arc::clone(&accounts),
+                Arc::clone(&transactions),
             ));
         }
 
         Ok(Self {
-            config,
+            slots,
             accounts,
             transactions,
             shutdown: send,
@@ -85,15 +79,33 @@ impl Filters {
 
     async fn update_loop(
         mut admin: ConfigMgmt,
-        logs: bool,
-        transactions: Arc<Mutex<TransactionsFilter>>,
         mut shutdown: oneshot::Receiver<()>,
+        logs: bool,
+        slots: Arc<Mutex<ConfigSlotsFilter>>,
+        accounts: Arc<Mutex<AccountsFilter>>,
+        transactions: Arc<Mutex<TransactionsFilter>>,
     ) {
         loop {
             tokio::select! {
                 msg = admin.pubsub.next() => match msg {
-                    Some(ConfigMgmtMsg::Transactions(msg)) => {
-                        transactions.lock().await.handle_change(msg, logs);
+                    Some(ConfigMgmtMsg::Global) => {
+                        let config = match admin.get_global_config().await {
+                            Ok(config) => config,
+                            Err(error) => {
+                                error!("failed to read config on update: {:?}", error);
+                                continue
+                            },
+                        };
+
+                        *slots.lock().await = config.slots;
+                        *accounts.lock().await = AccountsFilter::new(&config.accounts);
+                        *transactions.lock().await = TransactionsFilter::new(config.transactions);
+
+                        if logs {
+                            info!("Update slots filter: {:?}", slots.lock().await);
+                            info!("Update accounts filters: {:?}", accounts.lock().await);
+                            info!("Update transactions filters: {:?}", transactions.lock().await);
+                        }
                     }
                     None => {
                         error!("filters changes subscription failed");
@@ -111,27 +123,13 @@ impl Filters {
         let _ = self.shutdown.send(());
     }
 
-    pub fn is_slot_messages_enabled(&self) -> bool {
-        self.config.slots.enabled
+    pub async fn is_slot_messages_enabled(&self) -> bool {
+        self.slots.lock().await.enabled
     }
 
-    pub fn contains_tokenkeg_owner(&self, owner: &Pubkey) -> bool {
-        self.accounts.tokenkeg_owner.get(owner).is_some()
-    }
-
-    pub fn contains_tokenkeg_delegate(&self, owner: &Pubkey) -> bool {
-        self.accounts.tokenkeg_delegate.get(owner).is_some()
-    }
-
-    pub fn create_accounts_match(&self) -> AccountsFilterMatch {
-        AccountsFilterMatch {
-            accounts_filter: &self.accounts,
-            account: HashSet::new(),
-            owner: HashSet::new(),
-            data_size: HashSet::new(),
-            tokenkeg_owner: HashSet::new(),
-            tokenkeg_delegate: HashSet::new(),
-        }
+    #[allow(clippy::needless_lifetimes)]
+    pub async fn create_accounts_match<'a>(&'a self) -> AccountsFilterMatch<'a> {
+        AccountsFilterMatch::new(self.accounts.lock().await)
     }
 
     pub async fn get_transaction_filters(
@@ -211,25 +209,55 @@ impl AccountsFilter {
     }
 }
 
+// Is it possible todo with `&str` instead of `String`?
 #[derive(Debug)]
 pub struct AccountsFilterMatch<'a> {
-    accounts_filter: &'a AccountsFilter,
-    pub account: HashSet<&'a str>,
-    pub owner: HashSet<&'a str>,
-    pub data_size: HashSet<&'a str>,
-    pub tokenkeg_owner: HashSet<&'a str>,
-    pub tokenkeg_delegate: HashSet<&'a str>,
+    accounts_filter: MutexGuard<'a, AccountsFilter>,
+    account: HashSet<String>,
+    owner: HashSet<String>,
+    data_size: HashSet<String>,
+    tokenkeg_owner: HashSet<String>,
+    tokenkeg_delegate: HashSet<String>,
 }
 
 impl<'a> AccountsFilterMatch<'a> {
+    fn new(accounts_filter: MutexGuard<'a, AccountsFilter>) -> Self {
+        Self {
+            accounts_filter,
+            account: Default::default(),
+            owner: Default::default(),
+            data_size: Default::default(),
+            tokenkeg_owner: Default::default(),
+            tokenkeg_delegate: Default::default(),
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.account = Default::default();
+        self.owner = Default::default();
+        self.data_size = Default::default();
+        self.tokenkeg_owner = Default::default();
+        self.tokenkeg_delegate = Default::default();
+    }
+
+    pub fn contains_tokenkeg_owner(&self, owner: &Pubkey) -> bool {
+        self.accounts_filter.tokenkeg_owner.get(owner).is_some()
+    }
+
+    pub fn contains_tokenkeg_delegate(&self, owner: &Pubkey) -> bool {
+        self.accounts_filter.tokenkeg_delegate.get(owner).is_some()
+    }
+
     fn extend<Q: Hash + Eq>(
-        set: &mut HashSet<&'a str>,
-        map: &'a HashMap<Q, HashSet<String>>,
+        set: &mut HashSet<String>,
+        map: &HashMap<Q, HashSet<String>>,
         key: &Q,
     ) -> bool {
         if let Some(names) = map.get(key) {
             for name in names {
-                set.insert(name);
+                if !set.contains(name) {
+                    set.insert(name.clone());
+                }
             }
             true
         } else {
@@ -321,26 +349,6 @@ struct TransactionsFilter {
 impl TransactionsFilter {
     fn new(filters: HashMap<String, ConfigTransactionsFilter>) -> Self {
         Self { filters }
-    }
-
-    fn handle_change(&mut self, msg: ConfigMgmtMsgTransactions, logs: bool) {
-        match msg {
-            ConfigMgmtMsgTransactions::Add { name, config } => {
-                if self.filters.contains_key(&name) {
-                    error!("transactions filter already exists: {}", name);
-                } else {
-                    self.filters.insert(name.clone(), config);
-                    if logs {
-                        info!("transactions filter added: {}", name)
-                    }
-                }
-            }
-            ConfigMgmtMsgTransactions::Remove { name } => {
-                if self.filters.remove(&name).is_some() && logs {
-                    info!("transactions filter removed: {}", name);
-                }
-            }
-        }
     }
 
     pub fn get_filters(&self, transaction: &ReplicaTransactionInfo) -> Vec<String> {

@@ -23,7 +23,6 @@ hyper-tls = "0.5"
 lazy_static = "1"
 log = "0.4.14"
 prometheus = "0.13"
-rand = "0.7"
 redis = { version = "0.21.4", features = ["tokio-comp", "tokio-native-tls-comp"] }
 rusoto_core = "0.48"
 rusoto_credential = "0.48"
