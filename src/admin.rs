@@ -3,7 +3,7 @@ use {
     futures::stream::{Stream, StreamExt},
     log::*,
     redis::{AsyncCommands, RedisError},
-    serde::Deserialize,
+    serde::{Deserialize, Serialize},
     std::pin::Pin,
     thiserror::Error,
 };
@@ -12,8 +12,10 @@ use {
 pub enum AdminError {
     #[error("redis error: {0}")]
     Redis(#[from] RedisError),
-    #[error("deserialize error: {0}")]
+    #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("expected admin value as null")]
+    AdminNotNone,
 }
 
 pub type AdminResult<T = ()> = Result<T, AdminError>;
@@ -48,14 +50,36 @@ impl ConfigMgmt {
     pub async fn get_global_config(&self) -> AdminResult<ConfigFilters> {
         let mut connection = self.config.redis.get_async_connection().await?;
         let data: String = connection.get(&self.config.config).await?;
-        Ok(ConfigFilters {
-            admin: None,
-            ..serde_json::from_str(&data)?
-        })
+        let config: ConfigFilters = serde_json::from_str(&data)?;
+        if config.admin.is_none() {
+            Ok(config)
+        } else {
+            Err(AdminError::AdminNotNone)
+        }
+    }
+
+    pub async fn set_global_config(&self, config: &ConfigFilters) -> AdminResult {
+        let mut connection = self.config.redis.get_async_connection().await?;
+        if config.admin.is_none() {
+            connection
+                .set(&self.config.config, serde_json::to_string(config)?)
+                .await?;
+            Ok(())
+        } else {
+            Err(AdminError::AdminNotNone)
+        }
+    }
+
+    pub async fn send_message(&self, message: &ConfigMgmtMsg) -> AdminResult {
+        let mut connection = self.config.redis.get_async_connection().await?;
+        connection
+            .publish(&self.config.channel, serde_json::to_string(message)?)
+            .await?;
+        Ok(())
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "target", rename_all = "snake_case")]
 pub enum ConfigMgmtMsg {
     Global,

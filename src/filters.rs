@@ -159,37 +159,40 @@ impl AccountsFilter {
     pub fn new(filters: &HashMap<String, ConfigAccountsFilter>) -> Self {
         let mut this = Self::default();
         for (name, filter) in filters.iter() {
-            this.filters.push(name.clone());
-            Self::set(
+            let mut not_empty = false;
+            not_empty |= Self::set(
                 &mut this.account,
                 &mut this.account_required,
                 name,
                 &filter.account,
             );
-            Self::set(
+            not_empty |= Self::set(
                 &mut this.owner,
                 &mut this.owner_required,
                 name,
                 &filter.owner,
             );
-            Self::set(
+            not_empty |= Self::set(
                 &mut this.data_size,
                 &mut this.data_size_required,
                 name,
                 &filter.data_size,
             );
-            Self::set(
+            not_empty |= Self::set(
                 &mut this.tokenkeg_owner,
                 &mut this.tokenkeg_owner_required,
                 name,
                 &filter.tokenkeg_owner,
             );
-            Self::set(
+            not_empty |= Self::set(
                 &mut this.tokenkeg_delegate,
                 &mut this.tokenkeg_delegate_required,
                 name,
                 &filter.tokenkeg_delegate,
             );
+            if not_empty {
+                this.filters.push(name.clone());
+            }
         }
         this
     }
@@ -199,12 +202,15 @@ impl AccountsFilter {
         set_required: &mut HashSet<String>,
         name: &str,
         set: &HashSet<Q>,
-    ) {
+    ) -> bool {
         if !set.is_empty() {
             set_required.insert(name.to_string());
             for key in set.iter().cloned() {
                 map.entry(key).or_default().insert(name.to_string());
             }
+            true
+        } else {
+            false
         }
     }
 }
