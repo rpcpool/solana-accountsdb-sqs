@@ -226,3 +226,25 @@ Message matching a transaction filter:
     "transaction": "AgQXFwSYxFH87h7wrfgTOGKkB7cp0ALUn/sa+ZIC0BtEZfC0izqw8nSrHSsTgJyR3UopMS/il7Sw7/TCGatw/AGoeHVRKjzcouhH1sOcO8jPd8DUZUjjkSCxCQsoGev+EiamdRH76HINb1jmwSsRZy5ltQDtehV/GACjf6YsI8IGAgADBWq/1tY1Q0Uxay2cZ2AuZ6ns5oPAK6d7x+QITzsrbAqGeD6V2vys7Aji1g5puZKmytQC/polXFV7zhON6w8wt0kGp9UXGS8Kr8byZeP7d8x62oLFKdC+OxNuLQBVIAAAAAan1RcYx3TJKFZjmGkdXraLXrijm0ttXHNVWyEAAAAAB2FIHTV0dLt8TXYk69O9s9g1XnPREEP8DaNTgAAAAABknYvFYW4mcQxPTajheD5ptJrxqhd0jf4UN3jqnQ+99AEEBAECAwE9AgAAAAEAAAAAAAAAbAIAAAAAAADZBHfCuXX27yHwPoK7eTXB5FG8qIhJX8RSiTsCsF4KJwEbfFZiAAAAAA=="
 }
 ```
+
+### Config reload
+
+It's possible to reload filters without re-starting solana-validator.
+
+You can check CLI-tool for this: `cargo run --bin config -- --help`.
+
+For activating reloading you need add to config data for connection to Redis:
+
+```json
+"filters": {
+    "admin": {
+        "redis": "redis://127.0.0.1:6379/",
+        "channel": "admin",
+        "config": "config"
+    }
+}
+```
+
+Now plugin will load config from Redis.
+
+Each time when config need to be reloaded these data should be published to `admin` channel: `{"target":"global"}`.
