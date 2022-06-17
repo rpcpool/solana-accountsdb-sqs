@@ -1,7 +1,7 @@
 use {
     crate::sqs::SlotStatus,
     flate2::{write::GzEncoder, Compression as GzCompression},
-    redis::Client as RedisClient,
+    redis::{aio::Connection as RedisConnection, AsyncCommands, Client as RedisClient, RedisError},
     rusoto_core::Region,
     serde::{de, ser::SerializeStruct, Deserialize, Deserializer, Serialize, Serializer},
     solana_geyser_plugin_interface::geyser_plugin_interface::{
@@ -12,11 +12,25 @@ use {
         borrow::Cow,
         collections::{HashMap, HashSet},
         fs::read_to_string,
+        hash::{Hash, Hasher},
         io::{Result as IoResult, Write},
         net::SocketAddr,
         path::Path,
     },
+    thiserror::Error,
 };
+
+#[derive(Debug, Error)]
+pub enum PubkeyWithSourceError {
+    #[error("redis error: {0}")]
+    Redis(#[from] RedisError),
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("expected loaded pubkeys for redis source")]
+    ExpectedLoadedPubkeys,
+}
+
+pub type PubkeyWithSourceResult = Result<(), PubkeyWithSourceError>;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -232,6 +246,25 @@ pub struct ConfigFilters {
     pub transactions: HashMap<String, ConfigTransactionsFilter>,
 }
 
+impl ConfigFilters {
+    pub async fn load_pubkeys(
+        &mut self,
+        connection: &mut RedisConnection,
+    ) -> PubkeyWithSourceResult {
+        for filter in self.accounts.values_mut() {
+            filter.load_pubkeys(connection).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn save_pubkeys(&self, connection: &mut RedisConnection) -> PubkeyWithSourceResult {
+        for filter in self.accounts.values() {
+            filter.save_pubkeys(connection).await?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigFiltersAdmin {
@@ -255,19 +288,130 @@ pub struct ConfigSlotsFilter {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, untagged)]
+pub enum PubkeyWithSource {
+    #[serde(
+        deserialize_with = "PubkeyWithSource::deserialize_pubkey",
+        serialize_with = "PubkeyWithSource::serialize_pubkey"
+    )]
+    Pubkey(Pubkey),
+    Redis {
+        set: String,
+        keys: Option<HashSet<Pubkey>>,
+    },
+}
+
+#[allow(clippy::derive_hash_xor_eq)]
+impl Hash for PubkeyWithSource {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Self::Pubkey(pubkey) => pubkey.hash(state),
+            Self::Redis { set, .. } => set.hash(state),
+        }
+    }
+}
+
+impl IntoIterator for PubkeyWithSource {
+    type Item = Pubkey;
+    type IntoIter = Box<dyn Iterator<Item = Self::Item>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        match self {
+            Self::Pubkey(pubkey) => Box::new(Some(pubkey).into_iter()),
+            Self::Redis { keys, .. } => match keys {
+                Some(keys) => Box::new(keys.into_iter()),
+                None => Box::new(None.into_iter()),
+            },
+        }
+    }
+}
+
+impl PubkeyWithSource {
+    async fn load(&mut self, connection: &mut RedisConnection) -> PubkeyWithSourceResult {
+        if let Self::Redis { set, keys } = self {
+            let smembers: Vec<String> = connection.smembers(&*set).await?;
+            *keys = Some(
+                smembers
+                    .iter()
+                    .map(|member| member.parse().map_err(de::Error::custom))
+                    .collect::<Result<_, serde_json::Error>>()?,
+            );
+        }
+        Ok(())
+    }
+
+    async fn save(&self, connection: &mut RedisConnection) -> PubkeyWithSourceResult {
+        if let Self::Redis { set, keys } = self {
+            match keys {
+                Some(keys) => {
+                    let keys = keys.iter().map(|k| k.to_string()).collect::<Vec<_>>();
+                    connection.del(&set).await?;
+                    connection.sadd(&set, keys).await?;
+                }
+                None => return Err(PubkeyWithSourceError::ExpectedLoadedPubkeys),
+            }
+        }
+        Ok(())
+    }
+
+    fn deserialize_pubkey<'de, D>(deserializer: D) -> Result<Pubkey, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer)
+            .and_then(|pubkey| pubkey.parse().map_err(de::Error::custom))
+    }
+
+    fn serialize_pubkey<S>(pubkey: &Pubkey, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(pubkey.to_string().as_str())
+    }
+}
+
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ConfigAccountsFilter {
-    #[serde(deserialize_with = "deserialize_set_pubkeys")]
-    pub account: HashSet<Pubkey>,
-    #[serde(deserialize_with = "deserialize_set_pubkeys")]
-    pub owner: HashSet<Pubkey>,
+    pub account: HashSet<PubkeyWithSource>,
+    pub owner: HashSet<PubkeyWithSource>,
     #[serde(deserialize_with = "deserialize_data_size")]
     pub data_size: HashSet<usize>,
-    #[serde(deserialize_with = "deserialize_set_pubkeys")]
-    pub tokenkeg_owner: HashSet<Pubkey>,
-    #[serde(deserialize_with = "deserialize_set_pubkeys")]
-    pub tokenkeg_delegate: HashSet<Pubkey>,
+    pub tokenkeg_owner: HashSet<PubkeyWithSource>,
+    pub tokenkeg_delegate: HashSet<PubkeyWithSource>,
+}
+
+impl ConfigAccountsFilter {
+    pub async fn load_pubkeys(
+        &mut self,
+        connection: &mut RedisConnection,
+    ) -> PubkeyWithSourceResult {
+        Self::load_pubkeys2(&mut self.account, connection).await
+    }
+
+    async fn load_pubkeys2(
+        set: &mut HashSet<PubkeyWithSource>,
+        connection: &mut RedisConnection,
+    ) -> PubkeyWithSourceResult {
+        let mut result = Ok(());
+        for mut value in set.drain().collect::<Vec<_>>().into_iter() {
+            if result.is_ok() {
+                if let Err(error) = value.load(connection).await {
+                    result = Err(error);
+                }
+            }
+            set.insert(value);
+        }
+        result
+    }
+
+    pub async fn save_pubkeys(&self, connection: &mut RedisConnection) -> PubkeyWithSourceResult {
+        for value in self.account.iter() {
+            value.save(connection).await?;
+        }
+        Ok(())
+    }
 }
 
 impl Serialize for ConfigAccountsFilter {
@@ -276,17 +420,11 @@ impl Serialize for ConfigAccountsFilter {
         S: Serializer,
     {
         let mut s = serializer.serialize_struct("ConfigAccountsFilter", 5)?;
-        s.serialize_field("account", &serialize_set_pubkeys(&self.account))?;
-        s.serialize_field("owner", &serialize_set_pubkeys(&self.owner))?;
+        s.serialize_field("account", &self.account)?;
+        s.serialize_field("owner", &self.owner)?;
         s.serialize_field("data_size", &self.data_size)?;
-        s.serialize_field(
-            "tokenkeg_owner",
-            &serialize_set_pubkeys(&self.tokenkeg_owner),
-        )?;
-        s.serialize_field(
-            "tokenkeg_delegate",
-            &serialize_set_pubkeys(&self.tokenkeg_delegate),
-        )?;
+        s.serialize_field("tokenkeg_owner", &self.tokenkeg_owner)?;
+        s.serialize_field("tokenkeg_delegate", &self.tokenkeg_delegate)?;
         s.end()
     }
 }

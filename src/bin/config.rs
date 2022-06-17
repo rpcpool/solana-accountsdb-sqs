@@ -3,7 +3,7 @@ use {
     clap::{Parser, Subcommand},
     solana_geyser_sqs::{
         admin::{ConfigMgmt, ConfigMgmtMsg},
-        config::{Config, ConfigAccountsFilter, ConfigTransactionsFilter},
+        config::{Config, ConfigAccountsFilter, ConfigTransactionsFilter, PubkeyWithSource},
     },
     solana_sdk::pubkey::Pubkey,
     std::{collections::HashSet, hash::Hash},
@@ -47,6 +47,7 @@ enum ArgsActionAccounts {
         #[clap(short, long)]
         config: Option<String>,
     },
+    // TODO: add redis set support
     Change {
         /// Filter name
         #[clap(short, long)]
@@ -246,12 +247,12 @@ async fn main() -> Result<()> {
                         }
                         _ => {}
                     }
-                    changed |= set_add_pubkey(&mut filter.accounts.include, account_add_include)?;
+                    changed |= set_add_pubkey2(&mut filter.accounts.include, account_add_include)?;
                     changed |=
-                        set_remove_pubkey(&mut filter.accounts.include, account_remove_include)?;
-                    changed |= set_add_pubkey(&mut filter.accounts.exclude, account_add_exclude)?;
+                        set_remove_pubkey2(&mut filter.accounts.include, account_remove_include)?;
+                    changed |= set_add_pubkey2(&mut filter.accounts.exclude, account_add_exclude)?;
                     changed |=
-                        set_remove_pubkey(&mut filter.accounts.exclude, account_remove_exclude)?;
+                        set_remove_pubkey2(&mut filter.accounts.exclude, account_remove_exclude)?;
                     if changed {
                         admin.set_global_config(&config).await?;
                         println!("Transaction filter {:?} changed", name);
@@ -280,7 +281,18 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn set_add_pubkey(set: &mut HashSet<Pubkey>, pubkey_maybe: Option<String>) -> Result<bool> {
+fn set_add_pubkey(
+    set: &mut HashSet<PubkeyWithSource>,
+    pubkey_maybe: Option<String>,
+) -> Result<bool> {
+    Ok(if let Some(pubkey) = pubkey_maybe {
+        set_add(set, Some(PubkeyWithSource::Pubkey(pubkey.parse()?)))?
+    } else {
+        false
+    })
+}
+
+fn set_add_pubkey2(set: &mut HashSet<Pubkey>, pubkey_maybe: Option<String>) -> Result<bool> {
     Ok(if let Some(pubkey) = pubkey_maybe {
         set_add(set, Some(pubkey.parse()?))?
     } else {
@@ -301,7 +313,18 @@ where
     })
 }
 
-fn set_remove_pubkey(set: &mut HashSet<Pubkey>, pubkey_maybe: Option<String>) -> Result<bool> {
+fn set_remove_pubkey(
+    set: &mut HashSet<PubkeyWithSource>,
+    pubkey_maybe: Option<String>,
+) -> Result<bool> {
+    Ok(if let Some(pubkey) = pubkey_maybe {
+        set_remove(set, Some(PubkeyWithSource::Pubkey(pubkey.parse()?)))?
+    } else {
+        false
+    })
+}
+
+fn set_remove_pubkey2(set: &mut HashSet<Pubkey>, pubkey_maybe: Option<String>) -> Result<bool> {
     Ok(if let Some(pubkey) = pubkey_maybe {
         set_remove(set, Some(pubkey.parse()?))?
     } else {

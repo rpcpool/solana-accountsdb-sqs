@@ -35,6 +35,16 @@ pub struct FiltersInner {
     transactions: TransactionsFilter,
 }
 
+impl FiltersInner {
+    fn new(config: ConfigFilters) -> Self {
+        Self {
+            slots: config.slots,
+            accounts: AccountsFilter::new(config.accounts),
+            transactions: TransactionsFilter::new(config.transactions),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Filters {
     inner: Arc<Mutex<FiltersInner>>,
@@ -52,11 +62,7 @@ impl Filters {
             None => None,
         };
 
-        let inner = Arc::new(Mutex::new(FiltersInner {
-            slots: config.slots,
-            accounts: AccountsFilter::new(&config.accounts),
-            transactions: TransactionsFilter::new(config.transactions),
-        }));
+        let inner = Arc::new(Mutex::new(FiltersInner::new(config)));
         if logs {
             info!("Filters: {:?}", inner);
         }
@@ -90,11 +96,7 @@ impl Filters {
                             },
                         };
 
-                        let new_inner = FiltersInner {
-                            slots: config.slots,
-                            accounts: AccountsFilter::new(&config.accounts),
-                            transactions: TransactionsFilter::new(config.transactions),
-                        };
+                        let new_inner = FiltersInner::new(config);
 
                         let mut locked = inner.lock().await;
                         *locked = new_inner;
@@ -153,61 +155,77 @@ struct AccountsFilter {
 }
 
 impl AccountsFilter {
-    pub fn new(filters: &HashMap<String, ConfigAccountsFilter>) -> Self {
+    pub fn new(filters: HashMap<String, ConfigAccountsFilter>) -> Self {
         let mut this = Self::default();
-        for (name, filter) in filters.iter() {
+        for (name, filter) in filters.into_iter() {
             let mut not_empty = false;
             not_empty |= Self::set(
                 &mut this.account,
                 &mut this.account_required,
-                name,
-                &filter.account,
+                &name,
+                filter
+                    .account
+                    .into_iter()
+                    .flat_map(|value| value.into_iter()),
             );
             not_empty |= Self::set(
                 &mut this.owner,
                 &mut this.owner_required,
-                name,
-                &filter.owner,
+                &name,
+                filter.owner.into_iter().flat_map(|value| value.into_iter()),
             );
             not_empty |= Self::set(
                 &mut this.data_size,
                 &mut this.data_size_required,
-                name,
-                &filter.data_size,
+                &name,
+                filter.data_size.into_iter(),
             );
             not_empty |= Self::set(
                 &mut this.tokenkeg_owner,
                 &mut this.tokenkeg_owner_required,
-                name,
-                &filter.tokenkeg_owner,
+                &name,
+                filter
+                    .tokenkeg_owner
+                    .into_iter()
+                    .flat_map(|value| value.into_iter()),
             );
             not_empty |= Self::set(
                 &mut this.tokenkeg_delegate,
                 &mut this.tokenkeg_delegate_required,
-                name,
-                &filter.tokenkeg_delegate,
+                &name,
+                filter
+                    .tokenkeg_delegate
+                    .into_iter()
+                    .flat_map(|value| value.into_iter()),
             );
             if not_empty {
-                this.filters.push(name.clone());
+                this.filters.push(name);
             }
         }
         this
     }
 
-    fn set<Q: Hash + Eq + Clone>(
+    fn set<Q, I>(
         map: &mut HashMap<Q, HashSet<String>>,
         set_required: &mut HashSet<String>,
         name: &str,
-        set: &HashSet<Q>,
-    ) -> bool {
-        if !set.is_empty() {
-            set_required.insert(name.to_string());
-            for key in set.iter().cloned() {
-                map.entry(key).or_default().insert(name.to_string());
-            }
-            true
-        } else {
+        keys: I,
+    ) -> bool
+    where
+        Q: Hash + Eq + Clone,
+        I: Iterator<Item = Q>,
+    {
+        let mut empty = true;
+        for key in keys {
+            empty = false;
+            map.entry(key).or_default().insert(name.to_string());
+        }
+
+        if empty {
             false
+        } else {
+            set_required.insert(name.to_string());
+            true
         }
     }
 }
