@@ -233,7 +233,7 @@ It's possible to reload filters without re-starting solana-validator.
 
 You can check CLI-tool for this: `cargo run --bin config -- --help`.
 
-For activating reloading you need add to config data for connection to Redis:
+For activating reloading you need to add `admin` section to config for connection to Redis:
 
 ```json
 "filters": {
@@ -245,6 +245,6 @@ For activating reloading you need add to config data for connection to Redis:
 }
 ```
 
-Now plugin will load config from Redis.
+Now plugin will load config from Redis (`config` key in current example). Config format in Redis is same as in `json` file except that `admin` section should not exists.
 
-Each time when config need to be reloaded these data should be published to `admin` channel: `{"target":"global"}`.
+Each time when config need to be reloaded these data should be published to channel (`admin` in current example): `{"target":"global"}`.

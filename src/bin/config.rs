@@ -282,8 +282,7 @@ async fn main() -> Result<()> {
 
 fn set_add_pubkey(set: &mut HashSet<Pubkey>, pubkey_maybe: Option<String>) -> Result<bool> {
     Ok(if let Some(pubkey) = pubkey_maybe {
-        let pubkey = pubkey.parse()?;
-        set_add(set, Some(pubkey))?
+        set_add(set, Some(pubkey.parse()?))?
     } else {
         false
     })
