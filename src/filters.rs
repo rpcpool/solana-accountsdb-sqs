@@ -17,7 +17,7 @@ use {
         sync::Arc,
     },
     thiserror::Error,
-    tokio::sync::{oneshot, Mutex, MutexGuard},
+    tokio::sync::{oneshot, MappedMutexGuard, Mutex, MutexGuard},
 };
 
 #[derive(Debug, Error)]
@@ -29,10 +29,15 @@ pub enum FiltersError {
 pub type FiltersResult<T = ()> = Result<T, FiltersError>;
 
 #[derive(Debug)]
+pub struct FiltersInner {
+    slots: ConfigSlotsFilter,
+    accounts: AccountsFilter,
+    transactions: TransactionsFilter,
+}
+
+#[derive(Debug)]
 pub struct Filters {
-    slots: Arc<Mutex<ConfigSlotsFilter>>,
-    accounts: Arc<Mutex<AccountsFilter>>,
-    transactions: Arc<Mutex<TransactionsFilter>>,
+    inner: Arc<Mutex<FiltersInner>>,
     shutdown: oneshot::Sender<()>,
 }
 
@@ -47,32 +52,22 @@ impl Filters {
             None => None,
         };
 
-        let slots = Arc::new(Mutex::new(config.slots));
-        let accounts = Arc::new(Mutex::new(AccountsFilter::new(&config.accounts)));
-        let transactions = Arc::new(Mutex::new(TransactionsFilter::new(config.transactions)));
-
+        let inner = Arc::new(Mutex::new(FiltersInner {
+            slots: config.slots,
+            accounts: AccountsFilter::new(&config.accounts),
+            transactions: TransactionsFilter::new(config.transactions),
+        }));
         if logs {
-            info!("Init slots filter: {:?}", slots);
-            info!("Init accounts filters: {:?}", accounts);
-            info!("Init transactions filters: {:?}", transactions);
+            info!("Filters: {:?}", inner);
         }
 
         let (send, recv) = oneshot::channel();
         if let Some(admin) = admin {
-            tokio::spawn(Self::update_loop(
-                admin,
-                recv,
-                logs,
-                Arc::clone(&slots),
-                Arc::clone(&accounts),
-                Arc::clone(&transactions),
-            ));
+            tokio::spawn(Self::update_loop(admin, recv, logs, Arc::clone(&inner)));
         }
 
         Ok(Self {
-            slots,
-            accounts,
-            transactions,
+            inner,
             shutdown: send,
         })
     }
@@ -81,9 +76,7 @@ impl Filters {
         mut admin: ConfigMgmt,
         mut shutdown: oneshot::Receiver<()>,
         logs: bool,
-        slots: Arc<Mutex<ConfigSlotsFilter>>,
-        accounts: Arc<Mutex<AccountsFilter>>,
-        transactions: Arc<Mutex<TransactionsFilter>>,
+        inner: Arc<Mutex<FiltersInner>>,
     ) {
         loop {
             tokio::select! {
@@ -97,14 +90,16 @@ impl Filters {
                             },
                         };
 
-                        *slots.lock().await = config.slots;
-                        *accounts.lock().await = AccountsFilter::new(&config.accounts);
-                        *transactions.lock().await = TransactionsFilter::new(config.transactions);
+                        let new_inner = FiltersInner {
+                            slots: config.slots,
+                            accounts: AccountsFilter::new(&config.accounts),
+                            transactions: TransactionsFilter::new(config.transactions),
+                        };
 
+                        let mut locked = inner.lock().await;
+                        *locked = new_inner;
                         if logs {
-                            info!("Update slots filter: {:?}", slots.lock().await);
-                            info!("Update accounts filters: {:?}", accounts.lock().await);
-                            info!("Update transactions filters: {:?}", transactions.lock().await);
+                            info!("Update filters: {:?}", locked);
                         }
                     }
                     None => {
@@ -124,19 +119,21 @@ impl Filters {
     }
 
     pub async fn is_slot_messages_enabled(&self) -> bool {
-        self.slots.lock().await.enabled
+        self.inner.lock().await.slots.enabled
     }
 
     #[allow(clippy::needless_lifetimes)]
     pub async fn create_accounts_match<'a>(&'a self) -> AccountsFilterMatch<'a> {
-        AccountsFilterMatch::new(self.accounts.lock().await)
+        let inner = self.inner.lock().await;
+        AccountsFilterMatch::new(MutexGuard::map(inner, |inner| &mut inner.accounts))
     }
 
     pub async fn get_transaction_filters(
         &self,
         transaction: &ReplicaTransactionInfo,
     ) -> Vec<String> {
-        self.transactions.lock().await.get_filters(transaction)
+        let inner = self.inner.lock().await;
+        inner.transactions.get_filters(transaction)
     }
 }
 
@@ -218,7 +215,7 @@ impl AccountsFilter {
 // Is it possible todo with `&str` instead of `String`?
 #[derive(Debug)]
 pub struct AccountsFilterMatch<'a> {
-    accounts_filter: MutexGuard<'a, AccountsFilter>,
+    accounts_filter: MappedMutexGuard<'a, AccountsFilter>,
     account: HashSet<String>,
     owner: HashSet<String>,
     data_size: HashSet<String>,
@@ -227,7 +224,7 @@ pub struct AccountsFilterMatch<'a> {
 }
 
 impl<'a> AccountsFilterMatch<'a> {
-    fn new(accounts_filter: MutexGuard<'a, AccountsFilter>) -> Self {
+    fn new(accounts_filter: MappedMutexGuard<'a, AccountsFilter>) -> Self {
         Self {
             accounts_filter,
             account: Default::default(),
