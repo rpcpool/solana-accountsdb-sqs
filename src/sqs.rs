@@ -1,8 +1,8 @@
 use {
-    super::{
+    crate::{
         aws::{AwsError, S3Client, SqsClient, SqsMessageAttributes},
         config::{AccountsDataCompression, Config},
-        filter::{AccountsFilter, TransactionsFilter},
+        filters::{Filters, FiltersError},
         prom::{
             UploadMessagesStatus, UPLOAD_MESSAGES_TOTAL, UPLOAD_MISSIED_INFO, UPLOAD_QUEUE_SIZE,
         },
@@ -308,6 +308,8 @@ pub enum SqsClientError {
     InvalidCommitmentLevel(SlotStatus),
     #[error("aws error: {0}")]
     Aws(#[from] AwsError),
+    #[error("filters error: {0}")]
+    Filters(#[from] FiltersError),
     #[error("send message through send queue failed: channel is closed")]
     UpdateQueueChannelClosed,
 }
@@ -432,32 +434,23 @@ impl AwsSqsClient {
         let accounts_data_compression = config.messages.accounts_data_compression;
         let sqs = SqsClient::new(config.sqs)?;
         let s3 = S3Client::new(config.s3)?;
-        let is_slot_messages_enabled = config.slots.enabled;
-        let accounts_filter = AccountsFilter::new(config.accounts_filters);
-        let transactions_filter = TransactionsFilter::new(config.transactions_filter);
-        if config.log.filters {
-            log::info!("Sqs slots messages enabled: {}", is_slot_messages_enabled);
-            log::info!("Sqs accounts filters: {:#?}", accounts_filter);
-            log::info!("Sqs transactions filter: {:#?}", transactions_filter);
-        }
+        let filters = Filters::new(config.filters, config.log.filters).await?;
 
         // Save required Tokenkeg Accounts
         let mut tokenkeg_owner_accounts: HashMap<Pubkey, ReplicaAccountInfo> = HashMap::new();
         let mut tokenkeg_delegate_accounts: HashMap<Pubkey, ReplicaAccountInfo> = HashMap::new();
+        let accounts_filter = filters.create_accounts_match().await;
         while let Some(message) = rx.recv().await {
             match message {
                 Message::UpdateSlot(_) => unreachable!(),
                 Message::UpdateAccount(account) => {
                     if let Some(owner) = account.token_owner() {
-                        if !accounts_filter.match_tokenkeg_owner(&owner).is_empty() {
+                        if accounts_filter.contains_tokenkeg_owner(&owner) {
                             tokenkeg_owner_accounts.insert(account.pubkey, account.clone());
                         }
                     }
                     if let Some(Some(delegate)) = account.token_delegate() {
-                        if !accounts_filter
-                            .match_tokenkeg_delegate(&delegate)
-                            .is_empty()
-                        {
+                        if accounts_filter.contains_tokenkeg_delegate(&delegate) {
                             tokenkeg_delegate_accounts.insert(account.pubkey, account.clone());
                         }
                     }
@@ -469,11 +462,14 @@ impl AwsSqsClient {
                     break;
                 }
                 Message::Shutdown => {
+                    drop(accounts_filter);
+                    filters.shutdown();
                     send_job.store(false, Ordering::Relaxed);
                     return Ok(());
                 }
             }
         }
+        drop(accounts_filter);
         info!("startup finished");
 
         // Messages, accounts and tokenkeg history changes
@@ -517,64 +513,51 @@ impl AwsSqsClient {
 
         // Add new messages for an accounts on commitment_level
         #[allow(clippy::too_many_arguments)]
-        fn generate_messages(
+        async fn generate_messages(
+            filters: &Filters,
             messages: &mut LinkedList<SendMessageWithPayload>,
             accounts: &BTreeSet<ReplicaAccountInfo>,
-            accounts_filter: &AccountsFilter,
             tokenkeg_owner_accounts: &mut HashMap<Pubkey, ReplicaAccountInfo>,
             tokenkeg_delegate_accounts: &mut HashMap<Pubkey, ReplicaAccountInfo>,
             tokenkeg_owner_accounts_hist: &mut HashMap<Pubkey, Option<ReplicaAccountInfo>>,
             tokenkeg_delegate_accounts_hist: &mut HashMap<Pubkey, Option<ReplicaAccountInfo>>,
             transactions: &[ReplicaTransactionInfo],
-            transactions_filter: &TransactionsFilter,
             accounts_data_compression: &AccountsDataCompression,
         ) {
+            let mut account_filters = filters.create_accounts_match().await;
             for account in accounts {
-                let mut filters = accounts_filter.create_match();
+                account_filters.reset();
 
-                filters
-                    .account
-                    .extend(accounts_filter.match_account(&account.pubkey).iter());
-                filters
-                    .owner
-                    .extend(accounts_filter.match_owner(&account.owner).iter());
-                filters
-                    .data_size
-                    .extend(accounts_filter.match_data_size(account.data.len()).iter());
+                account_filters.match_account(&account.pubkey);
+                account_filters.match_owner(&account.owner);
+                account_filters.match_data_size(account.data.len());
 
-                if accounts_filter.match_tokenkeg(account) {
+                if account_filters.match_tokenkeg(account) {
                     let owner = account.token_owner().expect("valid tokenkeg");
-                    if let Some((pubkey, value, set)) =
-                        match tokenkeg_owner_accounts.get(&account.pubkey) {
-                            Some(existed)
-                                if existed.token_owner().expect("valid tokenkeg") != owner =>
-                            {
-                                let set = accounts_filter.match_tokenkeg_owner(&owner);
-                                let prev = if set.is_empty() {
-                                    tokenkeg_owner_accounts.remove(&account.pubkey)
-                                } else {
-                                    tokenkeg_owner_accounts.insert(account.pubkey, account.clone())
-                                };
-                                Some((account.pubkey, prev, set))
-                            }
-                            None => {
-                                let set = accounts_filter.match_tokenkeg_owner(&owner);
-                                if !set.is_empty() {
-                                    tokenkeg_owner_accounts.insert(account.pubkey, account.clone());
-                                    Some((account.pubkey, None, set))
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => None,
+                    match tokenkeg_owner_accounts.get(&account.pubkey) {
+                        Some(existed)
+                            if existed.token_owner().expect("valid tokenkeg") != owner =>
+                        {
+                            let prev = if account_filters.match_tokenkeg_owner(&owner) {
+                                tokenkeg_owner_accounts.insert(account.pubkey, account.clone())
+                            } else {
+                                tokenkeg_owner_accounts.remove(&account.pubkey)
+                            };
+                            tokenkeg_owner_accounts_hist
+                                .entry(account.pubkey)
+                                .or_insert(prev);
                         }
-                    {
-                        tokenkeg_owner_accounts_hist.entry(pubkey).or_insert(value);
-                        filters.tokenkeg_owner.extend(set.iter());
+                        None if account_filters.match_tokenkeg_owner(&owner) => {
+                            tokenkeg_owner_accounts.insert(account.pubkey, account.clone());
+                            tokenkeg_owner_accounts_hist
+                                .entry(account.pubkey)
+                                .or_insert(None);
+                        }
+                        _ => {}
                     }
 
                     let delegate = account.token_delegate().expect("valid tokenkeg");
-                    if let Some((pubkey, value, set)) = match (
+                    match (
                         delegate,
                         delegate.and_then(|_| tokenkeg_delegate_accounts.get(&account.pubkey)),
                     ) {
@@ -585,33 +568,28 @@ impl AwsSqsClient {
                                 .expect("valid delegate")
                                 != delegate =>
                         {
-                            let set = accounts_filter.match_tokenkeg_delegate(&delegate);
-                            let prev = if set.is_empty() {
-                                tokenkeg_delegate_accounts.remove(&account.pubkey)
-                            } else {
+                            let prev = if account_filters.match_tokenkeg_delegate(&delegate) {
                                 tokenkeg_delegate_accounts.insert(account.pubkey, account.clone())
+                            } else {
+                                tokenkeg_delegate_accounts.remove(&account.pubkey)
                             };
-                            Some((account.pubkey, prev, set))
+                            tokenkeg_delegate_accounts_hist
+                                .entry(account.pubkey)
+                                .or_insert(prev);
                         }
                         (Some(delegate), None) => {
-                            let set = accounts_filter.match_tokenkeg_delegate(&delegate);
-                            if !set.is_empty() {
+                            if account_filters.match_tokenkeg_delegate(&delegate) {
                                 tokenkeg_delegate_accounts.insert(account.pubkey, account.clone());
-                                Some((account.pubkey, None, set))
-                            } else {
-                                None
+                                tokenkeg_delegate_accounts_hist
+                                    .entry(account.pubkey)
+                                    .or_insert(None);
                             }
                         }
-                        _ => None,
-                    } {
-                        tokenkeg_delegate_accounts_hist
-                            .entry(pubkey)
-                            .or_insert(value);
-                        filters.tokenkeg_delegate.extend(set.iter());
+                        _ => {}
                     }
                 }
 
-                let filters = filters.get_filters();
+                let filters = account_filters.get_filters();
                 if !filters.is_empty() {
                     add_message(
                         messages,
@@ -622,7 +600,7 @@ impl AwsSqsClient {
             }
 
             for transaction in transactions {
-                let filters = transactions_filter.get_filters(transaction);
+                let filters = filters.get_transaction_filters(transaction).await;
                 if !filters.is_empty() {
                     add_message(
                         messages,
@@ -689,17 +667,16 @@ impl AwsSqsClient {
                         }
 
                         generate_messages(
+                            &filters,
                             &mut messages,
                             accounts,
-                            &accounts_filter,
                             &mut tokenkeg_owner_accounts,
                             &mut tokenkeg_delegate_accounts,
                             tokenkeg_owner_accounts_hist.entry($slot).or_default(),
                             tokenkeg_delegate_accounts_hist.entry($slot).or_default(),
                             transactions,
-                            &transactions_filter,
                             &accounts_data_compression,
-                        );
+                        ).await;
                     }
                     (accounts, transactions, block) => {
                         error!(
@@ -757,7 +734,7 @@ impl AwsSqsClient {
                 _ = send_jobs_readiness => {},
                 message = rx.recv() => match message {
                     Some(Message::UpdateSlot((status, slot))) => {
-                        if is_slot_messages_enabled {
+                        if filters.is_slot_messages_enabled().await {
                             add_message(&mut messages, SendMessage::Slot((status, slot)), &accounts_data_compression);
                         }
 
@@ -813,6 +790,7 @@ impl AwsSqsClient {
             .acquire_many(sqs_max_requests.try_into().expect("valid size"))
             .await
             .expect("alive");
+        filters.shutdown();
         send_job.store(false, Ordering::Relaxed);
         info!("update_loop finished");
 

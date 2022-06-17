@@ -1,5 +1,5 @@
 use {
-    super::config::ConfigPrometheus,
+    crate::config::ConfigPrometheus,
     futures::FutureExt,
     hyper::{
         server::conn::AddrStream,

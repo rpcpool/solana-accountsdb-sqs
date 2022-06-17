@@ -1,8 +1,9 @@
 use {
-    super::sqs::SlotStatus,
+    crate::sqs::SlotStatus,
     flate2::{write::GzEncoder, Compression as GzCompression},
+    redis::Client as RedisClient,
     rusoto_core::Region,
-    serde::{de, Deserialize, Deserializer},
+    serde::{de, ser::SerializeStruct, Deserialize, Deserializer, Serialize, Serializer},
     solana_geyser_plugin_interface::geyser_plugin_interface::{
         GeyserPluginError, Result as PluginResult,
     },
@@ -10,7 +11,6 @@ use {
     std::{
         borrow::Cow,
         collections::{HashMap, HashSet},
-        fmt,
         fs::read_to_string,
         io::{Result as IoResult, Write},
         net::SocketAddr,
@@ -28,11 +28,7 @@ pub struct Config {
     pub sqs: ConfigAwsSqs,
     pub s3: ConfigAwsS3,
     pub messages: ConfigMessages,
-    pub slots: ConfigSlots,
-    #[serde(rename = "accounts")]
-    pub accounts_filters: HashMap<String, ConfigAccountsFilter>,
-    #[serde(rename = "transactions")]
-    pub transactions_filter: HashMap<String, ConfigTransactionsFilter>,
+    pub filters: ConfigFilters,
 }
 
 impl Config {
@@ -132,37 +128,21 @@ impl<'de> Deserialize<'de> for UsizeStr {
     where
         D: Deserializer<'de>,
     {
-        struct AnyVisitor;
-
-        impl<'de> de::Visitor<'de> for AnyVisitor {
-            type Value = UsizeStr;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                write!(formatter, "string or number")
-            }
-
-            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                value
-                    .replace('_', "")
-                    .parse::<usize>()
-                    .map_err(de::Error::custom)
-                    .map(|value| UsizeStr { value })
-            }
-
-            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                Ok(UsizeStr {
-                    value: value as usize,
-                })
-            }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Value {
+            Integer(usize),
+            String(String),
         }
 
-        deserializer.deserialize_any(AnyVisitor)
+        match Value::deserialize(deserializer)? {
+            Value::Integer(value) => Ok(UsizeStr { value }),
+            Value::String(value) => value
+                .replace('_', "")
+                .parse::<usize>()
+                .map_err(de::Error::custom)
+                .map(|value| UsizeStr { value }),
+        }
     }
 }
 
@@ -243,55 +223,71 @@ impl AccountsDataCompression {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct ConfigSlots {
+pub struct ConfigFilters {
+    pub admin: Option<ConfigFiltersAdmin>,
+    pub slots: ConfigSlotsFilter,
+    pub accounts: HashMap<String, ConfigAccountsFilter>,
+    pub transactions: HashMap<String, ConfigTransactionsFilter>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigFiltersAdmin {
+    #[serde(deserialize_with = "deserialize_redis_client", skip_serializing)]
+    pub redis: RedisClient,
+    pub channel: String,
+    pub config: String,
+}
+
+fn deserialize_redis_client<'de, D>(deserializer: D) -> Result<RedisClient, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    String::deserialize(deserializer)
+        .and_then(|params| RedisClient::open(params).map_err(de::Error::custom))
+}
+
+#[derive(Debug, Default, Clone, Copy, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ConfigSlotsFilter {
     pub enabled: bool,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct ConfigAccountsFilter {
+    #[serde(deserialize_with = "deserialize_set_pubkeys")]
     pub account: HashSet<Pubkey>,
+    #[serde(deserialize_with = "deserialize_set_pubkeys")]
     pub owner: HashSet<Pubkey>,
+    #[serde(deserialize_with = "deserialize_data_size")]
     pub data_size: HashSet<usize>,
+    #[serde(deserialize_with = "deserialize_set_pubkeys")]
     pub tokenkeg_owner: HashSet<Pubkey>,
+    #[serde(deserialize_with = "deserialize_set_pubkeys")]
     pub tokenkeg_delegate: HashSet<Pubkey>,
 }
 
-impl<'de> Deserialize<'de> for ConfigAccountsFilter {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+impl Serialize for ConfigAccountsFilter {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        D: Deserializer<'de>,
+        S: Serializer,
     {
-        #[derive(Debug, Default, PartialEq, Eq, Deserialize)]
-        #[serde(default, deny_unknown_fields)]
-        struct ConfigAccountsFilterRaw {
-            #[serde(deserialize_with = "deserialize_set_pubkeys")]
-            account: HashSet<Pubkey>,
-            #[serde(deserialize_with = "deserialize_set_pubkeys")]
-            owner: HashSet<Pubkey>,
-            #[serde(deserialize_with = "deserialize_data_size")]
-            data_size: HashSet<usize>,
-            #[serde(deserialize_with = "deserialize_set_pubkeys")]
-            tokenkeg_owner: HashSet<Pubkey>,
-            #[serde(deserialize_with = "deserialize_set_pubkeys")]
-            tokenkeg_delegate: HashSet<Pubkey>,
-        }
-
-        let raw: ConfigAccountsFilterRaw = Deserialize::deserialize(deserializer)?;
-        if raw == ConfigAccountsFilterRaw::default() {
-            return Err(de::Error::custom(
-                "At least one field in filter should be defined",
-            ));
-        }
-
-        Ok(ConfigAccountsFilter {
-            account: raw.account,
-            owner: raw.owner,
-            data_size: raw.data_size,
-            tokenkeg_owner: raw.tokenkeg_owner,
-            tokenkeg_delegate: raw.tokenkeg_delegate,
-        })
+        let mut s = serializer.serialize_struct("ConfigAccountsFilter", 5)?;
+        s.serialize_field("account", &serialize_set_pubkeys(&self.account))?;
+        s.serialize_field("owner", &serialize_set_pubkeys(&self.owner))?;
+        s.serialize_field("data_size", &self.data_size)?;
+        s.serialize_field(
+            "tokenkeg_owner",
+            &serialize_set_pubkeys(&self.tokenkeg_owner),
+        )?;
+        s.serialize_field(
+            "tokenkeg_delegate",
+            &serialize_set_pubkeys(&self.tokenkeg_delegate),
+        )?;
+        s.end()
     }
 }
 
@@ -314,7 +310,11 @@ where
     })
 }
 
-#[derive(Debug, Default, Clone, Deserialize)]
+fn serialize_set_pubkeys(set: &HashSet<Pubkey>) -> HashSet<String> {
+    set.iter().map(|pubkey| pubkey.to_string()).collect()
+}
+
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ConfigTransactionsFilter {
     pub vote: bool,
@@ -353,5 +353,17 @@ impl<'de> Deserialize<'de> for ConfigTransactionsAccountsFilter {
             include: raw.include,
             exclude: raw.exclude,
         })
+    }
+}
+
+impl Serialize for ConfigTransactionsAccountsFilter {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut s = serializer.serialize_struct("ConfigTransactionsAccountsFilter", 2)?;
+        s.serialize_field("include", &serialize_set_pubkeys(&self.include))?;
+        s.serialize_field("exclude", &serialize_set_pubkeys(&self.exclude))?;
+        s.end()
     }
 }
