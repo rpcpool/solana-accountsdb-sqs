@@ -248,3 +248,21 @@ For activating reloading you need to add `admin` section to config for connectio
 Now plugin will load config from Redis (`config` key in current example). Config format in Redis is same as in `json` file except that `admin` section should not exists.
 
 Each time when config need to be reloaded these data should be published to channel (`admin` in current example): `{"target":"global"}`.
+
+### Large Public Keys sets in config
+
+If we want to start watch for a lot of Public Keys our config will be huge and for any change we will need upload a large object to Redis. As alternative plugin allow to use Redis `Set` which store Public Keys.
+
+Config example:
+
+```json
+{
+    "accounts": {
+        "filter-by-account": {
+            "account": [{"set": "filter-by-account-keys"}]
+        }
+    }
+}
+```
+
+With these config plugin will expect Public Keys in `filter-by-account-keys`.
