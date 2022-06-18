@@ -51,7 +51,6 @@ impl ConfigMgmt {
 
     pub async fn get_global_config(&self) -> AdminResult<ConfigFilters> {
         let mut connection = self.config.redis.get_async_connection().await?;
-        // TODO: use transaction?
         let data: String = connection.get(&self.config.config).await?;
         let mut config: ConfigFilters = serde_json::from_str(&data)?;
         if config.admin.is_none() {

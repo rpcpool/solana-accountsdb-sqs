@@ -46,7 +46,6 @@ enum ArgsActionAccounts {
         #[clap(short, long)]
         config: Option<String>,
     },
-    // TODO: add redis set support
     Change {
         /// Filter name
         #[clap(short, long)]
@@ -280,12 +279,22 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+fn parse_pubkey_with_source(pubkey: String) -> PubkeyWithSource {
+    match pubkey.parse() {
+        Ok(pubkey) => PubkeyWithSource::Pubkey(pubkey),
+        Err(_error) => PubkeyWithSource::Redis {
+            set: pubkey,
+            keys: None,
+        },
+    }
+}
+
 fn set_add_pubkey(
     set: &mut HashSet<PubkeyWithSource>,
     pubkey_maybe: Option<String>,
 ) -> Result<bool> {
     Ok(if let Some(pubkey) = pubkey_maybe {
-        set_add(set, Some(PubkeyWithSource::Pubkey(pubkey.parse()?)))?
+        set_add(set, Some(parse_pubkey_with_source(pubkey)))?
     } else {
         false
     })
@@ -309,7 +318,7 @@ fn set_remove_pubkey(
     pubkey_maybe: Option<String>,
 ) -> Result<bool> {
     Ok(if let Some(pubkey) = pubkey_maybe {
-        set_remove(set, Some(PubkeyWithSource::Pubkey(pubkey.parse()?)))?
+        set_remove(set, Some(parse_pubkey_with_source(pubkey)))?
     } else {
         false
     })
