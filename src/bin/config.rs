@@ -1,10 +1,12 @@
 use {
     anyhow::Result,
     clap::{Parser, Subcommand},
+    redis::AsyncCommands,
     solana_geyser_sqs::{
         admin::{ConfigMgmt, ConfigMgmtMsg},
         config::{Config, ConfigAccountsFilter, ConfigTransactionsFilter, PubkeyWithSource},
     },
+    solana_sdk::pubkey::Pubkey,
     std::{collections::HashSet, hash::Hash},
 };
 
@@ -32,6 +34,9 @@ enum ArgsAction {
     /// Change transactions filters
     #[clap(subcommand)]
     Transactions(ArgsActionTransactions),
+    /// Change Public Keys in Set
+    #[clap(subcommand)]
+    Set(ArgsActionSet),
     /// Send update signal
     SendUpdateSignal,
 }
@@ -125,6 +130,26 @@ enum ArgsActionTransactions {
         /// Filter name
         #[clap(short, long)]
         name: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ArgsActionSet {
+    Add {
+        /// Filter name
+        #[clap(short, long)]
+        name: String,
+        /// Public Key
+        #[clap(short, long)]
+        pubkey: String,
+    },
+    Remove {
+        /// Filter name
+        #[clap(short, long)]
+        name: String,
+        /// Public Key
+        #[clap(short, long)]
+        pubkey: String,
     },
 }
 
@@ -271,6 +296,18 @@ async fn main() -> Result<()> {
                 }
             }
         },
+        ArgsAction::Set(action) => match action {
+            ArgsActionSet::Add { name, pubkey } => {
+                pubkey.parse::<Pubkey>()?;
+                let mut connection = admin.config.redis.get_async_connection().await?;
+                connection.sadd(&name, pubkey).await?;
+            }
+            ArgsActionSet::Remove { name, pubkey } => {
+                pubkey.parse::<Pubkey>()?;
+                let mut connection = admin.config.redis.get_async_connection().await?;
+                connection.srem(&name, pubkey).await?;
+            }
+        },
         ArgsAction::SendUpdateSignal => {
             admin.send_message(&ConfigMgmtMsg::Global).await?;
         }
@@ -284,7 +321,7 @@ fn parse_pubkey_with_source(pubkey: String) -> PubkeyWithSource {
         Ok(pubkey) => PubkeyWithSource::Pubkey(pubkey),
         Err(_error) => PubkeyWithSource::Redis {
             set: pubkey,
-            keys: None,
+            keys: Some(HashSet::new()),
         },
     }
 }

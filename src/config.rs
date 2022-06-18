@@ -331,7 +331,7 @@ pub struct ConfigSlotsFilter {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, untagged)]
 pub enum PubkeyWithSource {
     #[serde(
@@ -343,6 +343,16 @@ pub enum PubkeyWithSource {
         set: String,
         keys: Option<HashSet<Pubkey>>,
     },
+}
+
+impl PartialEq<PubkeyWithSource> for PubkeyWithSource {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Pubkey(v1), Self::Pubkey(v2)) => v1 == v2,
+            (Self::Redis { set: v1, .. }, Self::Redis { set: v2, .. }) => v1 == v2,
+            _ => false,
+        }
+    }
 }
 
 #[allow(clippy::derive_hash_xor_eq)]
@@ -389,7 +399,7 @@ impl PubkeyWithSource {
             match keys {
                 Some(keys) => {
                     let keys = keys.iter().map(|k| k.to_string()).collect::<Vec<_>>();
-                    pipe.del(&set).sadd(&set, keys);
+                    pipe.del(&set).sadd(&set, &keys);
                 }
                 None => return Err(PubkeyWithSourceError::ExpectedLoadedPubkeys),
             }

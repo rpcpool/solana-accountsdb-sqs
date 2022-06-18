@@ -598,6 +598,7 @@ impl AwsSqsClient {
                     );
                 }
             }
+            drop(account_filters); // contains locked Mutex
 
             for transaction in transactions {
                 let filters = filters.get_transaction_filters(transaction).await;
