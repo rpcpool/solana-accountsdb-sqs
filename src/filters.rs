@@ -2,8 +2,7 @@ use {
     crate::{
         admin::{AdminError, ConfigMgmt, ConfigMgmtMsg},
         config::{
-            ConfigAccountsFilter, ConfigFilters, ConfigSlotsFilter,
-            ConfigTransactionsAccountsFilter, ConfigTransactionsFilter,
+            ConfigAccountsFilter, ConfigFilters, ConfigSlotsFilter, ConfigTransactionsFilter,
         },
         sqs::{ReplicaAccountInfo, ReplicaTransactionInfo},
     },
@@ -361,15 +360,48 @@ impl<'a> AccountsFilterMatch<'a> {
     }
 }
 
+#[derive(Debug, Clone)]
+struct TransactionsFilterInner {
+    vote: bool,
+    failed: bool,
+    accounts_include: HashSet<Pubkey>,
+    accounts_exclude: HashSet<Pubkey>,
+}
+
 // TODO: optimize filter (like accounts filter)
 #[derive(Debug, Clone)]
 struct TransactionsFilter {
-    filters: HashMap<String, ConfigTransactionsFilter>,
+    filters: HashMap<String, TransactionsFilterInner>,
 }
 
 impl TransactionsFilter {
     fn new(filters: HashMap<String, ConfigTransactionsFilter>) -> Self {
-        Self { filters }
+        Self {
+            filters: filters
+                .into_iter()
+                .map(|(name, filter)| {
+                    (
+                        name,
+                        TransactionsFilterInner {
+                            vote: filter.vote,
+                            failed: filter.failed,
+                            accounts_include: filter
+                                .accounts
+                                .include
+                                .into_iter()
+                                .flat_map(|value| value.into_iter())
+                                .collect(),
+                            accounts_exclude: filter
+                                .accounts
+                                .exclude
+                                .into_iter()
+                                .flat_map(|value| value.into_iter())
+                                .collect(),
+                        },
+                    )
+                })
+                .collect(),
+        }
     }
 
     pub fn get_filters(&self, transaction: &ReplicaTransactionInfo) -> Vec<String> {
@@ -394,18 +426,17 @@ impl TransactionsFilter {
     }
 
     fn contains_program(
-        filter: &ConfigTransactionsFilter,
+        filter: &TransactionsFilterInner,
         transaction: &ReplicaTransactionInfo,
     ) -> bool {
-        let ConfigTransactionsAccountsFilter { include, exclude } = &filter.accounts;
         let mut iter = transaction.transaction.message.account_keys.iter();
 
-        if !include.is_empty() {
-            return iter.any(|account_pubkey| include.contains(account_pubkey));
+        if !filter.accounts_include.is_empty() {
+            return iter.any(|account_pubkey| filter.accounts_include.contains(account_pubkey));
         }
 
-        if !exclude.is_empty() {
-            return iter.all(|account_pubkey| !exclude.contains(account_pubkey));
+        if !filter.accounts_exclude.is_empty() {
+            return iter.all(|account_pubkey| !filter.accounts_exclude.contains(account_pubkey));
         }
 
         // No filters means that any transaction is ok

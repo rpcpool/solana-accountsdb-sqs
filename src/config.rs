@@ -252,14 +252,54 @@ impl ConfigFilters {
         connection: &mut RedisConnection,
     ) -> PubkeyWithSourceResult {
         for filter in self.accounts.values_mut() {
-            filter.load_pubkeys(connection).await?;
+            Self::load_pubkeys2(&mut filter.account, connection).await?;
+            Self::load_pubkeys2(&mut filter.owner, connection).await?;
+            Self::load_pubkeys2(&mut filter.tokenkeg_owner, connection).await?;
+            Self::load_pubkeys2(&mut filter.tokenkeg_delegate, connection).await?;
+        }
+        for filter in self.transactions.values_mut() {
+            Self::load_pubkeys2(&mut filter.accounts.include, connection).await?;
+            Self::load_pubkeys2(&mut filter.accounts.exclude, connection).await?;
         }
         Ok(())
     }
 
+    async fn load_pubkeys2(
+        set: &mut HashSet<PubkeyWithSource>,
+        connection: &mut RedisConnection,
+    ) -> PubkeyWithSourceResult {
+        let mut result = Ok(());
+        for mut value in set.drain().collect::<Vec<_>>().into_iter() {
+            if result.is_ok() {
+                if let Err(error) = value.load(connection).await {
+                    result = Err(error);
+                }
+            }
+            set.insert(value);
+        }
+        result
+    }
+
     pub async fn save_pubkeys(&self, connection: &mut RedisConnection) -> PubkeyWithSourceResult {
         for filter in self.accounts.values() {
-            filter.save_pubkeys(connection).await?;
+            Self::save_pubkeys2(&filter.account, connection).await?;
+            Self::save_pubkeys2(&filter.owner, connection).await?;
+            Self::save_pubkeys2(&filter.tokenkeg_owner, connection).await?;
+            Self::save_pubkeys2(&filter.tokenkeg_delegate, connection).await?;
+        }
+        for filter in self.transactions.values() {
+            Self::save_pubkeys2(&filter.accounts.include, connection).await?;
+            Self::save_pubkeys2(&filter.accounts.exclude, connection).await?;
+        }
+        Ok(())
+    }
+
+    async fn save_pubkeys2(
+        set: &HashSet<PubkeyWithSource>,
+        connection: &mut RedisConnection,
+    ) -> PubkeyWithSourceResult {
+        for value in set {
+            value.save(connection).await?;
         }
         Ok(())
     }
@@ -382,38 +422,6 @@ pub struct ConfigAccountsFilter {
     pub tokenkeg_delegate: HashSet<PubkeyWithSource>,
 }
 
-impl ConfigAccountsFilter {
-    pub async fn load_pubkeys(
-        &mut self,
-        connection: &mut RedisConnection,
-    ) -> PubkeyWithSourceResult {
-        Self::load_pubkeys2(&mut self.account, connection).await
-    }
-
-    async fn load_pubkeys2(
-        set: &mut HashSet<PubkeyWithSource>,
-        connection: &mut RedisConnection,
-    ) -> PubkeyWithSourceResult {
-        let mut result = Ok(());
-        for mut value in set.drain().collect::<Vec<_>>().into_iter() {
-            if result.is_ok() {
-                if let Err(error) = value.load(connection).await {
-                    result = Err(error);
-                }
-            }
-            set.insert(value);
-        }
-        result
-    }
-
-    pub async fn save_pubkeys(&self, connection: &mut RedisConnection) -> PubkeyWithSourceResult {
-        for value in self.account.iter() {
-            value.save(connection).await?;
-        }
-        Ok(())
-    }
-}
-
 impl Serialize for ConfigAccountsFilter {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -437,21 +445,6 @@ where
         .map(|set| set.into_iter().map(|v| v.value).collect())
 }
 
-fn deserialize_set_pubkeys<'de, D>(deserializer: D) -> Result<HashSet<Pubkey>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    HashSet::<&str>::deserialize(deserializer).and_then(|set| {
-        set.into_iter()
-            .map(|pubkey| pubkey.parse().map_err(de::Error::custom))
-            .collect()
-    })
-}
-
-fn serialize_set_pubkeys(set: &HashSet<Pubkey>) -> HashSet<String> {
-    set.iter().map(|pubkey| pubkey.to_string()).collect()
-}
-
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ConfigTransactionsFilter {
@@ -462,8 +455,8 @@ pub struct ConfigTransactionsFilter {
 
 #[derive(Debug, Clone, Default)]
 pub struct ConfigTransactionsAccountsFilter {
-    pub include: HashSet<Pubkey>,
-    pub exclude: HashSet<Pubkey>,
+    pub include: HashSet<PubkeyWithSource>,
+    pub exclude: HashSet<PubkeyWithSource>,
 }
 
 impl<'de> Deserialize<'de> for ConfigTransactionsAccountsFilter {
@@ -474,10 +467,8 @@ impl<'de> Deserialize<'de> for ConfigTransactionsAccountsFilter {
         #[derive(Debug, Default, PartialEq, Eq, Deserialize)]
         #[serde(default, deny_unknown_fields)]
         struct ConfigTransactionsAccountsFilterRaw {
-            #[serde(deserialize_with = "deserialize_set_pubkeys")]
-            include: HashSet<Pubkey>,
-            #[serde(deserialize_with = "deserialize_set_pubkeys")]
-            exclude: HashSet<Pubkey>,
+            include: HashSet<PubkeyWithSource>,
+            exclude: HashSet<PubkeyWithSource>,
         }
 
         let raw: ConfigTransactionsAccountsFilterRaw = Deserialize::deserialize(deserializer)?;
@@ -500,8 +491,8 @@ impl Serialize for ConfigTransactionsAccountsFilter {
         S: Serializer,
     {
         let mut s = serializer.serialize_struct("ConfigTransactionsAccountsFilter", 2)?;
-        s.serialize_field("include", &serialize_set_pubkeys(&self.include))?;
-        s.serialize_field("exclude", &serialize_set_pubkeys(&self.exclude))?;
+        s.serialize_field("include", &self.include)?;
+        s.serialize_field("exclude", &self.exclude)?;
         s.end()
     }
 }
