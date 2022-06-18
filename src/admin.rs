@@ -63,13 +63,12 @@ impl ConfigMgmt {
     }
 
     pub async fn set_global_config(&self, config: &ConfigFilters) -> AdminResult {
-        let mut connection = self.config.redis.get_async_connection().await?;
-        // TODO: use pipe
         if config.admin.is_none() {
-            config.save_pubkeys(&mut connection).await?;
-            connection
-                .set(&self.config.config, serde_json::to_string(config)?)
-                .await?;
+            let mut connection = self.config.redis.get_async_connection().await?;
+            let mut pipe = redis::pipe();
+            config.save_pubkeys(&mut pipe).await?;
+            pipe.set(&self.config.config, serde_json::to_string(config)?);
+            pipe.query_async(&mut connection).await?;
             Ok(())
         } else {
             Err(AdminError::AdminNotNone)

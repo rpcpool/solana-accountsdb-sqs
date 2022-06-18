@@ -1,7 +1,10 @@
 use {
     crate::sqs::SlotStatus,
     flate2::{write::GzEncoder, Compression as GzCompression},
-    redis::{aio::Connection as RedisConnection, AsyncCommands, Client as RedisClient, RedisError},
+    redis::{
+        aio::Connection as RedisConnection, AsyncCommands, Client as RedisClient,
+        Pipeline as RedisPipeline, RedisError,
+    },
     rusoto_core::Region,
     serde::{de, ser::SerializeStruct, Deserialize, Deserializer, Serialize, Serializer},
     solana_geyser_plugin_interface::geyser_plugin_interface::{
@@ -280,26 +283,26 @@ impl ConfigFilters {
         result
     }
 
-    pub async fn save_pubkeys(&self, connection: &mut RedisConnection) -> PubkeyWithSourceResult {
+    pub async fn save_pubkeys(&self, pipe: &mut RedisPipeline) -> PubkeyWithSourceResult {
         for filter in self.accounts.values() {
-            Self::save_pubkeys2(&filter.account, connection).await?;
-            Self::save_pubkeys2(&filter.owner, connection).await?;
-            Self::save_pubkeys2(&filter.tokenkeg_owner, connection).await?;
-            Self::save_pubkeys2(&filter.tokenkeg_delegate, connection).await?;
+            Self::save_pubkeys2(&filter.account, pipe)?;
+            Self::save_pubkeys2(&filter.owner, pipe)?;
+            Self::save_pubkeys2(&filter.tokenkeg_owner, pipe)?;
+            Self::save_pubkeys2(&filter.tokenkeg_delegate, pipe)?;
         }
         for filter in self.transactions.values() {
-            Self::save_pubkeys2(&filter.accounts.include, connection).await?;
-            Self::save_pubkeys2(&filter.accounts.exclude, connection).await?;
+            Self::save_pubkeys2(&filter.accounts.include, pipe)?;
+            Self::save_pubkeys2(&filter.accounts.exclude, pipe)?;
         }
         Ok(())
     }
 
-    async fn save_pubkeys2(
+    fn save_pubkeys2(
         set: &HashSet<PubkeyWithSource>,
-        connection: &mut RedisConnection,
+        pipe: &mut RedisPipeline,
     ) -> PubkeyWithSourceResult {
         for value in set {
-            value.save(connection).await?;
+            value.save(pipe)?;
         }
         Ok(())
     }
@@ -381,13 +384,12 @@ impl PubkeyWithSource {
         Ok(())
     }
 
-    async fn save(&self, connection: &mut RedisConnection) -> PubkeyWithSourceResult {
+    fn save(&self, pipe: &mut RedisPipeline) -> PubkeyWithSourceResult {
         if let Self::Redis { set, keys } = self {
             match keys {
                 Some(keys) => {
                     let keys = keys.iter().map(|k| k.to_string()).collect::<Vec<_>>();
-                    connection.del(&set).await?;
-                    connection.sadd(&set, keys).await?;
+                    pipe.del(&set).sadd(&set, keys);
                 }
                 None => return Err(PubkeyWithSourceError::ExpectedLoadedPubkeys),
             }
