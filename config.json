@@ -14,7 +14,11 @@
         },
         "region": "us-east-2",
         "url": "https://sqs.us-east-2.amazonaws.com/<account_id>/<accounts_queue>",
-        "max_requests": "10_000"
+        "max_requests": "10_000",
+        "attributes": {
+            "node": "my-node-1",
+            "any-other-attribute": "value of any other attribute"
+        }
     },
     "s3": {
         "auth": {

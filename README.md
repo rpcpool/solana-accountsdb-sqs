@@ -266,3 +266,16 @@ Config example:
 ```
 
 With these config plugin will expect Public Keys in `filter-by-account-keys`.
+
+### Message attributes
+
+Except always existed message attributes `compression` and `md5` it's possible to set custom attributes in `sqs` config key:
+
+```json
+"sqs": {
+    "attributes": {
+        "node": "my-node-1",
+        "any-other-attribute": "value of any other attribute"
+    }
+}
+```
