@@ -1,9 +1,10 @@
 use {
     anyhow::Result,
     clap::{Parser, Subcommand},
+    redis::AsyncCommands,
     solana_geyser_sqs::{
         admin::{ConfigMgmt, ConfigMgmtMsg},
-        config::{Config, ConfigAccountsFilter, ConfigTransactionsFilter},
+        config::{Config, ConfigAccountsFilter, ConfigTransactionsFilter, PubkeyWithSource},
     },
     solana_sdk::pubkey::Pubkey,
     std::{collections::HashSet, hash::Hash},
@@ -33,6 +34,9 @@ enum ArgsAction {
     /// Change transactions filters
     #[clap(subcommand)]
     Transactions(ArgsActionTransactions),
+    /// Change Public Keys in Set
+    #[clap(subcommand)]
+    Set(ArgsActionSet),
     /// Send update signal
     SendUpdateSignal,
 }
@@ -126,6 +130,26 @@ enum ArgsActionTransactions {
         /// Filter name
         #[clap(short, long)]
         name: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ArgsActionSet {
+    Add {
+        /// Filter name
+        #[clap(short, long)]
+        name: String,
+        /// Public Key
+        #[clap(short, long)]
+        pubkey: String,
+    },
+    Remove {
+        /// Filter name
+        #[clap(short, long)]
+        name: String,
+        /// Public Key
+        #[clap(short, long)]
+        pubkey: String,
     },
 }
 
@@ -272,6 +296,18 @@ async fn main() -> Result<()> {
                 }
             }
         },
+        ArgsAction::Set(action) => match action {
+            ArgsActionSet::Add { name, pubkey } => {
+                pubkey.parse::<Pubkey>()?;
+                let mut connection = admin.config.redis.get_async_connection().await?;
+                connection.sadd(&name, pubkey).await?;
+            }
+            ArgsActionSet::Remove { name, pubkey } => {
+                pubkey.parse::<Pubkey>()?;
+                let mut connection = admin.config.redis.get_async_connection().await?;
+                connection.srem(&name, pubkey).await?;
+            }
+        },
         ArgsAction::SendUpdateSignal => {
             admin.send_message(&ConfigMgmtMsg::Global).await?;
         }
@@ -280,9 +316,22 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn set_add_pubkey(set: &mut HashSet<Pubkey>, pubkey_maybe: Option<String>) -> Result<bool> {
+fn parse_pubkey_with_source(pubkey: String) -> PubkeyWithSource {
+    match pubkey.parse() {
+        Ok(pubkey) => PubkeyWithSource::Pubkey(pubkey),
+        Err(_error) => PubkeyWithSource::Redis {
+            set: pubkey,
+            keys: Some(HashSet::new()),
+        },
+    }
+}
+
+fn set_add_pubkey(
+    set: &mut HashSet<PubkeyWithSource>,
+    pubkey_maybe: Option<String>,
+) -> Result<bool> {
     Ok(if let Some(pubkey) = pubkey_maybe {
-        set_add(set, Some(pubkey.parse()?))?
+        set_add(set, Some(parse_pubkey_with_source(pubkey)))?
     } else {
         false
     })
@@ -301,9 +350,12 @@ where
     })
 }
 
-fn set_remove_pubkey(set: &mut HashSet<Pubkey>, pubkey_maybe: Option<String>) -> Result<bool> {
+fn set_remove_pubkey(
+    set: &mut HashSet<PubkeyWithSource>,
+    pubkey_maybe: Option<String>,
+) -> Result<bool> {
     Ok(if let Some(pubkey) = pubkey_maybe {
-        set_remove(set, Some(pubkey.parse()?))?
+        set_remove(set, Some(parse_pubkey_with_source(pubkey)))?
     } else {
         false
     })

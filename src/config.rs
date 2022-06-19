@@ -1,7 +1,10 @@
 use {
     crate::sqs::SlotStatus,
     flate2::{write::GzEncoder, Compression as GzCompression},
-    redis::Client as RedisClient,
+    redis::{
+        aio::Connection as RedisConnection, AsyncCommands, Client as RedisClient,
+        Pipeline as RedisPipeline, RedisError,
+    },
     rusoto_core::Region,
     serde::{de, ser::SerializeStruct, Deserialize, Deserializer, Serialize, Serializer},
     solana_geyser_plugin_interface::geyser_plugin_interface::{
@@ -12,11 +15,25 @@ use {
         borrow::Cow,
         collections::{HashMap, HashSet},
         fs::read_to_string,
+        hash::{Hash, Hasher},
         io::{Result as IoResult, Write},
         net::SocketAddr,
         path::Path,
     },
+    thiserror::Error,
 };
+
+#[derive(Debug, Error)]
+pub enum PubkeyWithSourceError {
+    #[error("redis error: {0}")]
+    Redis(#[from] RedisError),
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("expected loaded pubkeys for redis source")]
+    ExpectedLoadedPubkeys,
+}
+
+pub type PubkeyWithSourceResult = Result<(), PubkeyWithSourceError>;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -232,6 +249,65 @@ pub struct ConfigFilters {
     pub transactions: HashMap<String, ConfigTransactionsFilter>,
 }
 
+impl ConfigFilters {
+    pub async fn load_pubkeys(
+        &mut self,
+        connection: &mut RedisConnection,
+    ) -> PubkeyWithSourceResult {
+        for filter in self.accounts.values_mut() {
+            Self::load_pubkeys2(&mut filter.account, connection).await?;
+            Self::load_pubkeys2(&mut filter.owner, connection).await?;
+            Self::load_pubkeys2(&mut filter.tokenkeg_owner, connection).await?;
+            Self::load_pubkeys2(&mut filter.tokenkeg_delegate, connection).await?;
+        }
+        for filter in self.transactions.values_mut() {
+            Self::load_pubkeys2(&mut filter.accounts.include, connection).await?;
+            Self::load_pubkeys2(&mut filter.accounts.exclude, connection).await?;
+        }
+        Ok(())
+    }
+
+    async fn load_pubkeys2(
+        set: &mut HashSet<PubkeyWithSource>,
+        connection: &mut RedisConnection,
+    ) -> PubkeyWithSourceResult {
+        let mut result = Ok(());
+        for mut value in set.drain().collect::<Vec<_>>().into_iter() {
+            if result.is_ok() {
+                if let Err(error) = value.load(connection).await {
+                    result = Err(error);
+                }
+            }
+            set.insert(value);
+        }
+        result
+    }
+
+    pub async fn save_pubkeys(&self, pipe: &mut RedisPipeline) -> PubkeyWithSourceResult {
+        for filter in self.accounts.values() {
+            Self::save_pubkeys2(&filter.account, pipe)?;
+            Self::save_pubkeys2(&filter.owner, pipe)?;
+            Self::save_pubkeys2(&filter.tokenkeg_owner, pipe)?;
+            Self::save_pubkeys2(&filter.tokenkeg_delegate, pipe)?;
+        }
+        for filter in self.transactions.values() {
+            Self::save_pubkeys2(&filter.accounts.include, pipe)?;
+            Self::save_pubkeys2(&filter.accounts.exclude, pipe)?;
+        }
+        Ok(())
+    }
+
+    fn save_pubkeys2(
+        set: &HashSet<PubkeyWithSource>,
+        pipe: &mut RedisPipeline,
+    ) -> PubkeyWithSourceResult {
+        for value in set {
+            value.save(pipe)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigFiltersAdmin {
@@ -255,19 +331,107 @@ pub struct ConfigSlotsFilter {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, untagged)]
+pub enum PubkeyWithSource {
+    #[serde(
+        deserialize_with = "PubkeyWithSource::deserialize_pubkey",
+        serialize_with = "PubkeyWithSource::serialize_pubkey"
+    )]
+    Pubkey(Pubkey),
+    Redis {
+        set: String,
+        keys: Option<HashSet<Pubkey>>,
+    },
+}
+
+impl PartialEq<PubkeyWithSource> for PubkeyWithSource {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Pubkey(v1), Self::Pubkey(v2)) => v1 == v2,
+            (Self::Redis { set: v1, .. }, Self::Redis { set: v2, .. }) => v1 == v2,
+            _ => false,
+        }
+    }
+}
+
+#[allow(clippy::derive_hash_xor_eq)]
+impl Hash for PubkeyWithSource {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Self::Pubkey(pubkey) => pubkey.hash(state),
+            Self::Redis { set, .. } => set.hash(state),
+        }
+    }
+}
+
+impl IntoIterator for PubkeyWithSource {
+    type Item = Pubkey;
+    type IntoIter = Box<dyn Iterator<Item = Self::Item>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        match self {
+            Self::Pubkey(pubkey) => Box::new(Some(pubkey).into_iter()),
+            Self::Redis { keys, .. } => match keys {
+                Some(keys) => Box::new(keys.into_iter()),
+                None => Box::new(None.into_iter()),
+            },
+        }
+    }
+}
+
+impl PubkeyWithSource {
+    async fn load(&mut self, connection: &mut RedisConnection) -> PubkeyWithSourceResult {
+        if let Self::Redis { set, keys } = self {
+            let smembers: Vec<String> = connection.smembers(&*set).await?;
+            *keys = Some(
+                smembers
+                    .iter()
+                    .map(|member| member.parse().map_err(de::Error::custom))
+                    .collect::<Result<_, serde_json::Error>>()?,
+            );
+        }
+        Ok(())
+    }
+
+    fn save(&self, pipe: &mut RedisPipeline) -> PubkeyWithSourceResult {
+        if let Self::Redis { set, keys } = self {
+            match keys {
+                Some(keys) => {
+                    let keys = keys.iter().map(|k| k.to_string()).collect::<Vec<_>>();
+                    pipe.del(&set).sadd(&set, &keys);
+                }
+                None => return Err(PubkeyWithSourceError::ExpectedLoadedPubkeys),
+            }
+        }
+        Ok(())
+    }
+
+    fn deserialize_pubkey<'de, D>(deserializer: D) -> Result<Pubkey, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer)
+            .and_then(|pubkey| pubkey.parse().map_err(de::Error::custom))
+    }
+
+    fn serialize_pubkey<S>(pubkey: &Pubkey, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(pubkey.to_string().as_str())
+    }
+}
+
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ConfigAccountsFilter {
-    #[serde(deserialize_with = "deserialize_set_pubkeys")]
-    pub account: HashSet<Pubkey>,
-    #[serde(deserialize_with = "deserialize_set_pubkeys")]
-    pub owner: HashSet<Pubkey>,
+    pub account: HashSet<PubkeyWithSource>,
+    pub owner: HashSet<PubkeyWithSource>,
     #[serde(deserialize_with = "deserialize_data_size")]
     pub data_size: HashSet<usize>,
-    #[serde(deserialize_with = "deserialize_set_pubkeys")]
-    pub tokenkeg_owner: HashSet<Pubkey>,
-    #[serde(deserialize_with = "deserialize_set_pubkeys")]
-    pub tokenkeg_delegate: HashSet<Pubkey>,
+    pub tokenkeg_owner: HashSet<PubkeyWithSource>,
+    pub tokenkeg_delegate: HashSet<PubkeyWithSource>,
 }
 
 impl Serialize for ConfigAccountsFilter {
@@ -276,17 +440,11 @@ impl Serialize for ConfigAccountsFilter {
         S: Serializer,
     {
         let mut s = serializer.serialize_struct("ConfigAccountsFilter", 5)?;
-        s.serialize_field("account", &serialize_set_pubkeys(&self.account))?;
-        s.serialize_field("owner", &serialize_set_pubkeys(&self.owner))?;
+        s.serialize_field("account", &self.account)?;
+        s.serialize_field("owner", &self.owner)?;
         s.serialize_field("data_size", &self.data_size)?;
-        s.serialize_field(
-            "tokenkeg_owner",
-            &serialize_set_pubkeys(&self.tokenkeg_owner),
-        )?;
-        s.serialize_field(
-            "tokenkeg_delegate",
-            &serialize_set_pubkeys(&self.tokenkeg_delegate),
-        )?;
+        s.serialize_field("tokenkeg_owner", &self.tokenkeg_owner)?;
+        s.serialize_field("tokenkeg_delegate", &self.tokenkeg_delegate)?;
         s.end()
     }
 }
@@ -299,21 +457,6 @@ where
         .map(|set| set.into_iter().map(|v| v.value).collect())
 }
 
-fn deserialize_set_pubkeys<'de, D>(deserializer: D) -> Result<HashSet<Pubkey>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    HashSet::<&str>::deserialize(deserializer).and_then(|set| {
-        set.into_iter()
-            .map(|pubkey| pubkey.parse().map_err(de::Error::custom))
-            .collect()
-    })
-}
-
-fn serialize_set_pubkeys(set: &HashSet<Pubkey>) -> HashSet<String> {
-    set.iter().map(|pubkey| pubkey.to_string()).collect()
-}
-
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ConfigTransactionsFilter {
@@ -324,8 +467,8 @@ pub struct ConfigTransactionsFilter {
 
 #[derive(Debug, Clone, Default)]
 pub struct ConfigTransactionsAccountsFilter {
-    pub include: HashSet<Pubkey>,
-    pub exclude: HashSet<Pubkey>,
+    pub include: HashSet<PubkeyWithSource>,
+    pub exclude: HashSet<PubkeyWithSource>,
 }
 
 impl<'de> Deserialize<'de> for ConfigTransactionsAccountsFilter {
@@ -336,10 +479,8 @@ impl<'de> Deserialize<'de> for ConfigTransactionsAccountsFilter {
         #[derive(Debug, Default, PartialEq, Eq, Deserialize)]
         #[serde(default, deny_unknown_fields)]
         struct ConfigTransactionsAccountsFilterRaw {
-            #[serde(deserialize_with = "deserialize_set_pubkeys")]
-            include: HashSet<Pubkey>,
-            #[serde(deserialize_with = "deserialize_set_pubkeys")]
-            exclude: HashSet<Pubkey>,
+            include: HashSet<PubkeyWithSource>,
+            exclude: HashSet<PubkeyWithSource>,
         }
 
         let raw: ConfigTransactionsAccountsFilterRaw = Deserialize::deserialize(deserializer)?;
@@ -362,8 +503,8 @@ impl Serialize for ConfigTransactionsAccountsFilter {
         S: Serializer,
     {
         let mut s = serializer.serialize_struct("ConfigTransactionsAccountsFilter", 2)?;
-        s.serialize_field("include", &serialize_set_pubkeys(&self.include))?;
-        s.serialize_field("exclude", &serialize_set_pubkeys(&self.exclude))?;
+        s.serialize_field("include", &self.include)?;
+        s.serialize_field("exclude", &self.exclude)?;
         s.end()
     }
 }

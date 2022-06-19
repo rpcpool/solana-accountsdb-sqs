@@ -1,5 +1,5 @@
 use {
-    crate::config::{ConfigFilters, ConfigFiltersAdmin},
+    crate::config::{ConfigFilters, ConfigFiltersAdmin, PubkeyWithSourceError},
     futures::stream::{Stream, StreamExt},
     log::*,
     redis::{AsyncCommands, RedisError},
@@ -16,6 +16,8 @@ pub enum AdminError {
     Json(#[from] serde_json::Error),
     #[error("expected admin value as null")]
     AdminNotNone,
+    #[error("pubkeys failed with redis: {0}")]
+    Pubkeys(#[from] PubkeyWithSourceError),
 }
 
 pub type AdminResult<T = ()> = Result<T, AdminError>;
@@ -50,8 +52,9 @@ impl ConfigMgmt {
     pub async fn get_global_config(&self) -> AdminResult<ConfigFilters> {
         let mut connection = self.config.redis.get_async_connection().await?;
         let data: String = connection.get(&self.config.config).await?;
-        let config: ConfigFilters = serde_json::from_str(&data)?;
+        let mut config: ConfigFilters = serde_json::from_str(&data)?;
         if config.admin.is_none() {
+            config.load_pubkeys(&mut connection).await?;
             Ok(config)
         } else {
             Err(AdminError::AdminNotNone)
@@ -59,11 +62,12 @@ impl ConfigMgmt {
     }
 
     pub async fn set_global_config(&self, config: &ConfigFilters) -> AdminResult {
-        let mut connection = self.config.redis.get_async_connection().await?;
         if config.admin.is_none() {
-            connection
-                .set(&self.config.config, serde_json::to_string(config)?)
-                .await?;
+            let mut connection = self.config.redis.get_async_connection().await?;
+            let mut pipe = redis::pipe();
+            config.save_pubkeys(&mut pipe).await?;
+            pipe.set(&self.config.config, serde_json::to_string(config)?);
+            pipe.query_async(&mut connection).await?;
             Ok(())
         } else {
             Err(AdminError::AdminNotNone)

@@ -2,8 +2,7 @@ use {
     crate::{
         admin::{AdminError, ConfigMgmt, ConfigMgmtMsg},
         config::{
-            ConfigAccountsFilter, ConfigFilters, ConfigSlotsFilter,
-            ConfigTransactionsAccountsFilter, ConfigTransactionsFilter,
+            ConfigAccountsFilter, ConfigFilters, ConfigSlotsFilter, ConfigTransactionsFilter,
         },
         sqs::{ReplicaAccountInfo, ReplicaTransactionInfo},
     },
@@ -17,7 +16,7 @@ use {
         sync::Arc,
     },
     thiserror::Error,
-    tokio::sync::{oneshot, Mutex, MutexGuard},
+    tokio::sync::{oneshot, MappedMutexGuard, Mutex, MutexGuard},
 };
 
 #[derive(Debug, Error)]
@@ -29,10 +28,25 @@ pub enum FiltersError {
 pub type FiltersResult<T = ()> = Result<T, FiltersError>;
 
 #[derive(Debug)]
+pub struct FiltersInner {
+    slots: ConfigSlotsFilter,
+    accounts: AccountsFilter,
+    transactions: TransactionsFilter,
+}
+
+impl FiltersInner {
+    fn new(config: ConfigFilters) -> Self {
+        Self {
+            slots: config.slots,
+            accounts: AccountsFilter::new(config.accounts),
+            transactions: TransactionsFilter::new(config.transactions),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct Filters {
-    slots: Arc<Mutex<ConfigSlotsFilter>>,
-    accounts: Arc<Mutex<AccountsFilter>>,
-    transactions: Arc<Mutex<TransactionsFilter>>,
+    inner: Arc<Mutex<FiltersInner>>,
     shutdown: oneshot::Sender<()>,
 }
 
@@ -47,32 +61,18 @@ impl Filters {
             None => None,
         };
 
-        let slots = Arc::new(Mutex::new(config.slots));
-        let accounts = Arc::new(Mutex::new(AccountsFilter::new(&config.accounts)));
-        let transactions = Arc::new(Mutex::new(TransactionsFilter::new(config.transactions)));
-
+        let inner = Arc::new(Mutex::new(FiltersInner::new(config)));
         if logs {
-            info!("Init slots filter: {:?}", slots);
-            info!("Init accounts filters: {:?}", accounts);
-            info!("Init transactions filters: {:?}", transactions);
+            info!("Filters: {:?}", inner);
         }
 
         let (send, recv) = oneshot::channel();
         if let Some(admin) = admin {
-            tokio::spawn(Self::update_loop(
-                admin,
-                recv,
-                logs,
-                Arc::clone(&slots),
-                Arc::clone(&accounts),
-                Arc::clone(&transactions),
-            ));
+            tokio::spawn(Self::update_loop(admin, recv, logs, Arc::clone(&inner)));
         }
 
         Ok(Self {
-            slots,
-            accounts,
-            transactions,
+            inner,
             shutdown: send,
         })
     }
@@ -81,9 +81,7 @@ impl Filters {
         mut admin: ConfigMgmt,
         mut shutdown: oneshot::Receiver<()>,
         logs: bool,
-        slots: Arc<Mutex<ConfigSlotsFilter>>,
-        accounts: Arc<Mutex<AccountsFilter>>,
-        transactions: Arc<Mutex<TransactionsFilter>>,
+        inner: Arc<Mutex<FiltersInner>>,
     ) {
         loop {
             tokio::select! {
@@ -97,14 +95,12 @@ impl Filters {
                             },
                         };
 
-                        *slots.lock().await = config.slots;
-                        *accounts.lock().await = AccountsFilter::new(&config.accounts);
-                        *transactions.lock().await = TransactionsFilter::new(config.transactions);
+                        let new_inner = FiltersInner::new(config);
 
+                        let mut locked = inner.lock().await;
+                        *locked = new_inner;
                         if logs {
-                            info!("Update slots filter: {:?}", slots.lock().await);
-                            info!("Update accounts filters: {:?}", accounts.lock().await);
-                            info!("Update transactions filters: {:?}", transactions.lock().await);
+                            info!("Update filters: {:?}", locked);
                         }
                     }
                     None => {
@@ -124,19 +120,21 @@ impl Filters {
     }
 
     pub async fn is_slot_messages_enabled(&self) -> bool {
-        self.slots.lock().await.enabled
+        self.inner.lock().await.slots.enabled
     }
 
     #[allow(clippy::needless_lifetimes)]
     pub async fn create_accounts_match<'a>(&'a self) -> AccountsFilterMatch<'a> {
-        AccountsFilterMatch::new(self.accounts.lock().await)
+        let inner = self.inner.lock().await;
+        AccountsFilterMatch::new(MutexGuard::map(inner, |inner| &mut inner.accounts))
     }
 
     pub async fn get_transaction_filters(
         &self,
         transaction: &ReplicaTransactionInfo,
     ) -> Vec<String> {
-        self.transactions.lock().await.get_filters(transaction)
+        let inner = self.inner.lock().await;
+        inner.transactions.get_filters(transaction)
     }
 }
 
@@ -156,61 +154,77 @@ struct AccountsFilter {
 }
 
 impl AccountsFilter {
-    pub fn new(filters: &HashMap<String, ConfigAccountsFilter>) -> Self {
+    pub fn new(filters: HashMap<String, ConfigAccountsFilter>) -> Self {
         let mut this = Self::default();
-        for (name, filter) in filters.iter() {
+        for (name, filter) in filters.into_iter() {
             let mut not_empty = false;
             not_empty |= Self::set(
                 &mut this.account,
                 &mut this.account_required,
-                name,
-                &filter.account,
+                &name,
+                filter
+                    .account
+                    .into_iter()
+                    .flat_map(|value| value.into_iter()),
             );
             not_empty |= Self::set(
                 &mut this.owner,
                 &mut this.owner_required,
-                name,
-                &filter.owner,
+                &name,
+                filter.owner.into_iter().flat_map(|value| value.into_iter()),
             );
             not_empty |= Self::set(
                 &mut this.data_size,
                 &mut this.data_size_required,
-                name,
-                &filter.data_size,
+                &name,
+                filter.data_size.into_iter(),
             );
             not_empty |= Self::set(
                 &mut this.tokenkeg_owner,
                 &mut this.tokenkeg_owner_required,
-                name,
-                &filter.tokenkeg_owner,
+                &name,
+                filter
+                    .tokenkeg_owner
+                    .into_iter()
+                    .flat_map(|value| value.into_iter()),
             );
             not_empty |= Self::set(
                 &mut this.tokenkeg_delegate,
                 &mut this.tokenkeg_delegate_required,
-                name,
-                &filter.tokenkeg_delegate,
+                &name,
+                filter
+                    .tokenkeg_delegate
+                    .into_iter()
+                    .flat_map(|value| value.into_iter()),
             );
             if not_empty {
-                this.filters.push(name.clone());
+                this.filters.push(name);
             }
         }
         this
     }
 
-    fn set<Q: Hash + Eq + Clone>(
+    fn set<Q, I>(
         map: &mut HashMap<Q, HashSet<String>>,
         set_required: &mut HashSet<String>,
         name: &str,
-        set: &HashSet<Q>,
-    ) -> bool {
-        if !set.is_empty() {
-            set_required.insert(name.to_string());
-            for key in set.iter().cloned() {
-                map.entry(key).or_default().insert(name.to_string());
-            }
-            true
-        } else {
+        keys: I,
+    ) -> bool
+    where
+        Q: Hash + Eq + Clone,
+        I: Iterator<Item = Q>,
+    {
+        let mut empty = true;
+        for key in keys {
+            empty = false;
+            map.entry(key).or_default().insert(name.to_string());
+        }
+
+        if empty {
             false
+        } else {
+            set_required.insert(name.to_string());
+            true
         }
     }
 }
@@ -218,7 +232,7 @@ impl AccountsFilter {
 // Is it possible todo with `&str` instead of `String`?
 #[derive(Debug)]
 pub struct AccountsFilterMatch<'a> {
-    accounts_filter: MutexGuard<'a, AccountsFilter>,
+    accounts_filter: MappedMutexGuard<'a, AccountsFilter>,
     account: HashSet<String>,
     owner: HashSet<String>,
     data_size: HashSet<String>,
@@ -227,7 +241,7 @@ pub struct AccountsFilterMatch<'a> {
 }
 
 impl<'a> AccountsFilterMatch<'a> {
-    fn new(accounts_filter: MutexGuard<'a, AccountsFilter>) -> Self {
+    fn new(accounts_filter: MappedMutexGuard<'a, AccountsFilter>) -> Self {
         Self {
             accounts_filter,
             account: Default::default(),
@@ -346,15 +360,48 @@ impl<'a> AccountsFilterMatch<'a> {
     }
 }
 
+#[derive(Debug, Clone)]
+struct TransactionsFilterInner {
+    vote: bool,
+    failed: bool,
+    accounts_include: HashSet<Pubkey>,
+    accounts_exclude: HashSet<Pubkey>,
+}
+
 // TODO: optimize filter (like accounts filter)
 #[derive(Debug, Clone)]
 struct TransactionsFilter {
-    filters: HashMap<String, ConfigTransactionsFilter>,
+    filters: HashMap<String, TransactionsFilterInner>,
 }
 
 impl TransactionsFilter {
     fn new(filters: HashMap<String, ConfigTransactionsFilter>) -> Self {
-        Self { filters }
+        Self {
+            filters: filters
+                .into_iter()
+                .map(|(name, filter)| {
+                    (
+                        name,
+                        TransactionsFilterInner {
+                            vote: filter.vote,
+                            failed: filter.failed,
+                            accounts_include: filter
+                                .accounts
+                                .include
+                                .into_iter()
+                                .flat_map(|value| value.into_iter())
+                                .collect(),
+                            accounts_exclude: filter
+                                .accounts
+                                .exclude
+                                .into_iter()
+                                .flat_map(|value| value.into_iter())
+                                .collect(),
+                        },
+                    )
+                })
+                .collect(),
+        }
     }
 
     pub fn get_filters(&self, transaction: &ReplicaTransactionInfo) -> Vec<String> {
@@ -379,18 +426,17 @@ impl TransactionsFilter {
     }
 
     fn contains_program(
-        filter: &ConfigTransactionsFilter,
+        filter: &TransactionsFilterInner,
         transaction: &ReplicaTransactionInfo,
     ) -> bool {
-        let ConfigTransactionsAccountsFilter { include, exclude } = &filter.accounts;
         let mut iter = transaction.transaction.message.account_keys.iter();
 
-        if !include.is_empty() {
-            return iter.any(|account_pubkey| include.contains(account_pubkey));
+        if !filter.accounts_include.is_empty() {
+            return iter.any(|account_pubkey| filter.accounts_include.contains(account_pubkey));
         }
 
-        if !exclude.is_empty() {
-            return iter.all(|account_pubkey| !exclude.contains(account_pubkey));
+        if !filter.accounts_exclude.is_empty() {
+            return iter.all(|account_pubkey| !filter.accounts_exclude.contains(account_pubkey));
         }
 
         // No filters means that any transaction is ok
