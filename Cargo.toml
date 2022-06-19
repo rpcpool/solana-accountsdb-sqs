@@ -17,11 +17,13 @@ clap = { version = "3.1.8", features = ["cargo", "derive"] }
 derivative = "2"
 flate2 = "1"
 futures = "0.3"
+hex = "0.4"
 humantime = "2.1.0"
 hyper = { version = "0.14", features = ["server"] }
 hyper-tls = "0.5"
 lazy_static = "1"
 log = "0.4.14"
+md-5 = "0.10"
 prometheus = "0.13"
 redis = { version = "0.21.4", features = ["tokio-comp", "tokio-native-tls-comp"] }
 rusoto_core = "0.48"
