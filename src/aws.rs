@@ -77,7 +77,7 @@ impl<'de> Deserialize<'de> for SqsMessageAttributes {
         for (attribute, value) in map.into_iter() {
             if not_allowed.contains(&attribute.as_str()) {
                 return Err(de::Error::custom(format!(
-                    "key {} not allowed as attribute",
+                    "key {:?} is not allowed as attribute",
                     attribute
                 )));
             }
