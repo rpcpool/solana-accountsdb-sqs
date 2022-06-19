@@ -1,6 +1,6 @@
 use {
     crate::{
-        aws::{AwsError, S3Client, SqsClient, SqsMessageAttributes},
+        aws::{AwsError, S3Client, SqsClient},
         config::{AccountsDataCompression, Config},
         filters::{Filters, FiltersError},
         prom::{
@@ -13,6 +13,7 @@ use {
         stream::{self, StreamExt},
     },
     log::*,
+    md5::{Digest, Md5},
     rusoto_sqs::SendMessageBatchRequestEntry,
     serde::{Deserialize, Serialize},
     serde_json::{json, Value},
@@ -269,8 +270,9 @@ impl SendMessage {
 struct SendMessageWithPayload {
     message: SendMessage,
     s3: bool,
+    md5: String,
+    compression: &'static str,
     payload: String,
-    message_attributes: SqsMessageAttributes,
 }
 
 impl SendMessageWithPayload {
@@ -285,11 +287,9 @@ impl SendMessageWithPayload {
             .map(|payload| Self {
                 message,
                 s3: payload.len() > SqsClient::REQUEST_LIMIT,
+                md5: hex::encode(Md5::digest(&payload)),
+                compression: accounts_data_compression.as_str(),
                 payload,
-                message_attributes: SqsClient::create_message_attributes(
-                    "compression",
-                    accounts_data_compression.as_str(),
-                ),
             })
     }
 
@@ -807,6 +807,7 @@ impl AwsSqsClient {
             stream::iter(messages.into_iter().enumerate())
                 .filter_map(|(id, message)| {
                     let s3 = if message.s3 { Some(s3.clone()) } else { None };
+                    let mut attributes = sqs.get_attributes();
                     async move {
                         let message_body = match s3 {
                             Some(s3) => {
@@ -827,12 +828,14 @@ impl AwsSqsClient {
                             }
                             None => message.payload,
                         };
+                        attributes.insert("md5", message.md5);
+                        attributes.insert("compression", message.compression);
                         Some((
                             message.message,
                             SendMessageBatchRequestEntry {
                                 id: id.to_string(),
                                 message_body,
-                                message_attributes: Some(message.message_attributes),
+                                message_attributes: Some(attributes.into_inner()),
                                 ..Default::default()
                             },
                         ))

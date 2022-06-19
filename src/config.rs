@@ -1,5 +1,5 @@
 use {
-    crate::sqs::SlotStatus,
+    crate::{aws::SqsMessageAttributes, sqs::SlotStatus},
     flate2::{write::GzEncoder, Compression as GzCompression},
     redis::{
         aio::Connection as RedisConnection, AsyncCommands, Client as RedisClient,
@@ -102,6 +102,7 @@ pub struct ConfigAwsSqs {
     pub url: String,
     #[serde(deserialize_with = "deserialize_max_requests")]
     pub max_requests: usize,
+    pub attributes: SqsMessageAttributes,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -174,12 +175,11 @@ pub struct ConfigAwsS3 {
     pub max_requests: usize,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
 pub struct ConfigMessages {
-    #[serde(default, deserialize_with = "deserialize_commitment_level")]
+    #[serde(deserialize_with = "deserialize_commitment_level")]
     pub commitment_level: SlotStatus,
-    #[serde(default)]
     pub accounts_data_compression: AccountsDataCompression,
 }
 
@@ -231,7 +231,7 @@ impl AccountsDataCompression {
         })
     }
 
-    pub fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &'static str {
         match *self {
             AccountsDataCompression::None => "none",
             AccountsDataCompression::Zstd { .. } => "zstd",
