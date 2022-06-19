@@ -271,8 +271,8 @@ struct SendMessageWithPayload {
     message: SendMessage,
     s3: bool,
     md5: String,
-    payload: String,
     compression: &'static str,
+    payload: String,
 }
 
 impl SendMessageWithPayload {
@@ -288,8 +288,8 @@ impl SendMessageWithPayload {
                 message,
                 s3: payload.len() > SqsClient::REQUEST_LIMIT,
                 md5: hex::encode(Md5::digest(&payload)),
-                payload,
                 compression: accounts_data_compression.as_str(),
+                payload,
             })
     }
 
@@ -828,8 +828,8 @@ impl AwsSqsClient {
                             }
                             None => message.payload,
                         };
-                        attributes.insert("compression", message.compression);
                         attributes.insert("md5", message.md5);
+                        attributes.insert("compression", message.compression);
                         Some((
                             message.message,
                             SendMessageBatchRequestEntry {
