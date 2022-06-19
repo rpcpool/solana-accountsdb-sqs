@@ -21,6 +21,7 @@ use {
         MessageAttributeValue, SendMessageBatchRequest, SendMessageBatchRequestEntry, Sqs,
         SqsClient as RusotoSqsClient,
     },
+    serde::de::{self, Deserialize, Deserializer},
     std::{collections::HashMap, sync::Arc, time::Duration},
     thiserror::Error,
     tokio::{sync::Semaphore, time::sleep},
@@ -40,18 +41,12 @@ pub enum AwsError {
 
 pub type AwsResult<T = ()> = Result<T, AwsError>;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct SqsMessageAttributes {
     map: HashMap<String, MessageAttributeValue>,
 }
 
 impl SqsMessageAttributes {
-    pub fn new<S1: Into<String>, S2: Into<String>>(key: S1, value: S2) -> Self {
-        let mut attributes = Self::default();
-        attributes.insert(key, value);
-        attributes
-    }
-
     pub fn insert<S1: Into<String>, S2: Into<String>>(&mut self, key: S1, value: S2) -> &Self {
         self.map.insert(
             key.into(),
@@ -69,12 +64,37 @@ impl SqsMessageAttributes {
     }
 }
 
+impl<'de> Deserialize<'de> for SqsMessageAttributes {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let not_allowed = vec!["compression"];
+
+        let mut attributes = SqsMessageAttributes::default();
+
+        let map = HashMap::<String, String>::deserialize(deserializer)?;
+        for (attribute, value) in map.into_iter() {
+            if not_allowed.contains(&attribute.as_str()) {
+                return Err(de::Error::custom(format!(
+                    "key {} not allowed as attribute",
+                    attribute
+                )));
+            }
+            attributes.insert(attribute, value);
+        }
+
+        Ok(attributes)
+    }
+}
+
 #[derive(derivative::Derivative)]
 #[derivative(Debug, Clone)]
 pub struct SqsClient {
     #[derivative(Debug = "ignore")]
     pub client: RusotoSqsClient,
     pub queue_url: String,
+    attributes: SqsMessageAttributes,
 }
 
 impl SqsClient {
@@ -87,6 +107,7 @@ impl SqsClient {
         Ok(Self {
             client: RusotoSqsClient::new_with_client(client, config.region),
             queue_url: config.url,
+            attributes: config.attributes,
         })
     }
 
@@ -102,6 +123,10 @@ impl SqsClient {
         UPLOAD_SQS_REQUESTS.dec();
 
         result.map_err(Into::into).map(|_| ())
+    }
+
+    pub fn get_attributes(&self) -> SqsMessageAttributes {
+        self.attributes.clone()
     }
 
     pub async fn send_batch(

@@ -1,6 +1,6 @@
 use {
     crate::{
-        aws::{AwsError, S3Client, SqsClient, SqsMessageAttributes},
+        aws::{AwsError, S3Client, SqsClient},
         config::{AccountsDataCompression, Config},
         filters::{Filters, FiltersError},
         prom::{
@@ -270,7 +270,7 @@ struct SendMessageWithPayload {
     message: SendMessage,
     s3: bool,
     payload: String,
-    message_attributes: SqsMessageAttributes,
+    compression: &'static str,
 }
 
 impl SendMessageWithPayload {
@@ -286,10 +286,7 @@ impl SendMessageWithPayload {
                 message,
                 s3: payload.len() > SqsClient::REQUEST_LIMIT,
                 payload,
-                message_attributes: SqsMessageAttributes::new(
-                    "compression",
-                    accounts_data_compression.as_str(),
-                ),
+                compression: accounts_data_compression.as_str(),
             })
     }
 
@@ -807,6 +804,7 @@ impl AwsSqsClient {
             stream::iter(messages.into_iter().enumerate())
                 .filter_map(|(id, message)| {
                     let s3 = if message.s3 { Some(s3.clone()) } else { None };
+                    let mut attributes = sqs.get_attributes();
                     async move {
                         let message_body = match s3 {
                             Some(s3) => {
@@ -827,12 +825,13 @@ impl AwsSqsClient {
                             }
                             None => message.payload,
                         };
+                        attributes.insert("compression", message.compression);
                         Some((
                             message.message,
                             SendMessageBatchRequestEntry {
                                 id: id.to_string(),
                                 message_body,
-                                message_attributes: Some(message.message_attributes.into_inner()),
+                                message_attributes: Some(attributes.into_inner()),
                                 ..Default::default()
                             },
                         ))

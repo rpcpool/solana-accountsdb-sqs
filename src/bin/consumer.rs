@@ -87,19 +87,16 @@ async fn send_loop(config: Config) -> anyhow::Result<()> {
             .await;
         println!("Put s3 object ({}): {:?}", key, result);
 
+        let mut attributes = SqsMessageAttributes::default();
+        attributes.insert("compression", AccountsDataCompression::None.as_str());
+
         let result = sqs
             .client
             .send_message_batch(SendMessageBatchRequest {
                 entries: vec![SendMessageBatchRequestEntry {
                     id: "0".to_owned(),
                     message_body: serde_json::json!({ "s3": key }).to_string(),
-                    message_attributes: Some(
-                        SqsMessageAttributes::new(
-                            "compression",
-                            AccountsDataCompression::None.as_str(),
-                        )
-                        .into_inner(),
-                    ),
+                    message_attributes: Some(attributes.into_inner()),
                     ..Default::default()
                 }],
                 queue_url: sqs.queue_url.clone(),
