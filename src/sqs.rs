@@ -286,7 +286,7 @@ impl SendMessageWithPayload {
                 message,
                 s3: payload.len() > SqsClient::REQUEST_LIMIT,
                 payload,
-                message_attributes: SqsClient::create_message_attributes(
+                message_attributes: SqsMessageAttributes::new(
                     "compression",
                     accounts_data_compression.as_str(),
                 ),
@@ -832,7 +832,7 @@ impl AwsSqsClient {
                             SendMessageBatchRequestEntry {
                                 id: id.to_string(),
                                 message_body,
-                                message_attributes: Some(message.message_attributes),
+                                message_attributes: Some(message.message_attributes.into_inner()),
                                 ..Default::default()
                             },
                         ))

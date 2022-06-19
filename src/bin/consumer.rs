@@ -10,7 +10,7 @@ use {
     },
     serde::Deserialize,
     solana_geyser_sqs::{
-        aws::{S3Client, SqsClient},
+        aws::{S3Client, SqsClient, SqsMessageAttributes},
         config::{AccountsDataCompression, Config},
     },
     std::{
@@ -93,10 +93,13 @@ async fn send_loop(config: Config) -> anyhow::Result<()> {
                 entries: vec![SendMessageBatchRequestEntry {
                     id: "0".to_owned(),
                     message_body: serde_json::json!({ "s3": key }).to_string(),
-                    message_attributes: Some(SqsClient::create_message_attributes(
-                        "compression",
-                        AccountsDataCompression::None.as_str(),
-                    )),
+                    message_attributes: Some(
+                        SqsMessageAttributes::new(
+                            "compression",
+                            AccountsDataCompression::None.as_str(),
+                        )
+                        .into_inner(),
+                    ),
                     ..Default::default()
                 }],
                 queue_url: sqs.queue_url.clone(),

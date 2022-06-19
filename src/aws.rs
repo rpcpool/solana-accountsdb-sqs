@@ -40,7 +40,34 @@ pub enum AwsError {
 
 pub type AwsResult<T = ()> = Result<T, AwsError>;
 
-pub type SqsMessageAttributes = HashMap<String, MessageAttributeValue>;
+#[derive(Debug, Default)]
+pub struct SqsMessageAttributes {
+    map: HashMap<String, MessageAttributeValue>,
+}
+
+impl SqsMessageAttributes {
+    pub fn new<S1: Into<String>, S2: Into<String>>(key: S1, value: S2) -> Self {
+        let mut attributes = Self::default();
+        attributes.insert(key, value);
+        attributes
+    }
+
+    pub fn insert<S1: Into<String>, S2: Into<String>>(&mut self, key: S1, value: S2) -> &Self {
+        self.map.insert(
+            key.into(),
+            MessageAttributeValue {
+                data_type: "String".to_owned(),
+                string_value: Some(value.into()),
+                ..Default::default()
+            },
+        );
+        self
+    }
+
+    pub fn into_inner(self) -> HashMap<String, MessageAttributeValue> {
+        self.map
+    }
+}
 
 #[derive(derivative::Derivative)]
 #[derivative(Debug, Clone)]
@@ -115,22 +142,6 @@ impl SqsClient {
                 .inc_by(failed.len() as u64);
         }
         failed
-    }
-
-    pub fn create_message_attributes<S1: Into<String>, S2: Into<String>>(
-        key: S1,
-        value: S2,
-    ) -> SqsMessageAttributes {
-        let mut attributes = HashMap::new();
-        attributes.insert(
-            key.into(),
-            MessageAttributeValue {
-                data_type: "String".to_owned(),
-                string_value: Some(value.into()),
-                ..Default::default()
-            },
-        );
-        attributes
     }
 }
 
