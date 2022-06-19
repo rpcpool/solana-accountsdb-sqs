@@ -233,11 +233,11 @@ impl AccountsFilter {
 #[derive(Debug)]
 pub struct AccountsFilterMatch<'a> {
     accounts_filter: MappedMutexGuard<'a, AccountsFilter>,
-    account: HashSet<String>,
-    owner: HashSet<String>,
-    data_size: HashSet<String>,
-    tokenkeg_owner: HashSet<String>,
-    tokenkeg_delegate: HashSet<String>,
+    account: HashSet<&'a str>,
+    owner: HashSet<&'a str>,
+    data_size: HashSet<&'a str>,
+    tokenkeg_owner: HashSet<&'a str>,
+    tokenkeg_delegate: HashSet<&'a str>,
 }
 
 impl<'a> AccountsFilterMatch<'a> {
@@ -269,14 +269,14 @@ impl<'a> AccountsFilterMatch<'a> {
     }
 
     fn extend<Q: Hash + Eq>(
-        set: &mut HashSet<String>,
-        map: &HashMap<Q, HashSet<String>>,
+        set: &mut HashSet<&'a str>,
+        map: &'a HashMap<Q, HashSet<String>>,
         key: &Q,
     ) -> bool {
         if let Some(names) = map.get(key) {
             for name in names {
-                if !set.contains(name) {
-                    set.insert(name.clone());
+                if !set.contains(name.as_str()) {
+                    set.insert(name.as_str());
                 }
             }
             true
@@ -285,15 +285,15 @@ impl<'a> AccountsFilterMatch<'a> {
         }
     }
 
-    pub fn match_account(&mut self, pubkey: &Pubkey) -> bool {
+    pub fn match_account(&'a mut self, pubkey: &Pubkey) -> bool {
         Self::extend(&mut self.account, &self.accounts_filter.account, pubkey)
     }
 
-    pub fn match_owner(&mut self, pubkey: &Pubkey) -> bool {
+    pub fn match_owner(&'a mut self, pubkey: &Pubkey) -> bool {
         Self::extend(&mut self.owner, &self.accounts_filter.owner, pubkey)
     }
 
-    pub fn match_data_size(&mut self, data_size: usize) -> bool {
+    pub fn match_data_size(&'a mut self, data_size: usize) -> bool {
         Self::extend(
             &mut self.data_size,
             &self.accounts_filter.data_size,
@@ -309,7 +309,7 @@ impl<'a> AccountsFilterMatch<'a> {
                 || !self.accounts_filter.tokenkeg_delegate.is_empty())
     }
 
-    pub fn match_tokenkeg_owner(&mut self, pubkey: &Pubkey) -> bool {
+    pub fn match_tokenkeg_owner(&'a mut self, pubkey: &Pubkey) -> bool {
         Self::extend(
             &mut self.tokenkeg_owner,
             &self.accounts_filter.tokenkeg_owner,
@@ -317,7 +317,7 @@ impl<'a> AccountsFilterMatch<'a> {
         )
     }
 
-    pub fn match_tokenkeg_delegate(&mut self, pubkey: &Pubkey) -> bool {
+    pub fn match_tokenkeg_delegate(&'a mut self, pubkey: &Pubkey) -> bool {
         Self::extend(
             &mut self.tokenkeg_delegate,
             &self.accounts_filter.tokenkeg_delegate,
