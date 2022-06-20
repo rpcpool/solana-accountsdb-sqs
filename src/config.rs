@@ -102,6 +102,7 @@ pub struct ConfigAwsSqs {
     pub url: String,
     #[serde(deserialize_with = "deserialize_max_requests")]
     pub max_requests: usize,
+    #[serde(default)]
     pub attributes: SqsMessageAttributes,
 }
 
