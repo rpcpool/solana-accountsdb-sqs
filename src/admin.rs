@@ -1,9 +1,10 @@
 use {
-    crate::config::{ConfigFilters, ConfigFiltersAdmin, PubkeyWithSourceError},
+    crate::config::{ConfigFilters, ConfigFiltersAdmin, PubkeyWithSource, PubkeyWithSourceError},
     futures::stream::{Stream, StreamExt},
     log::*,
     redis::{AsyncCommands, RedisError},
     serde::{Deserialize, Serialize},
+    solana_sdk::pubkey::Pubkey,
     std::pin::Pin,
     thiserror::Error,
 };
@@ -87,4 +88,69 @@ impl ConfigMgmt {
 #[serde(tag = "target", rename_all = "snake_case")]
 pub enum ConfigMgmtMsg {
     Global,
+    PubkeysSet {
+        filter: ConfigMgmtMsgFilter,
+        action: ConfigMgmtMsgAction,
+        #[serde(
+            deserialize_with = "PubkeyWithSource::deserialize_pubkey",
+            serialize_with = "PubkeyWithSource::serialize_pubkey"
+        )]
+        pubkey: Pubkey,
+    },
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigMgmtMsgFilter {
+    Accounts {
+        name: String,
+        kind: ConfigMgmtMsgFilterAccounts,
+    },
+    Transactions {
+        name: String,
+        kind: ConfigMgmtMsgFilterTransactions,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigMgmtMsgFilterAccounts {
+    Account,
+    Owner,
+    TokenkegOwner,
+    TokenkegDelegate,
+}
+
+impl ConfigMgmtMsgFilterAccounts {
+    pub fn as_str(&self) -> &str {
+        match *self {
+            Self::Account => "account",
+            Self::Owner => "owner",
+            Self::TokenkegOwner => "tokenkeg_owner",
+            Self::TokenkegDelegate => "tokenkeg_delegate",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigMgmtMsgFilterTransactions {
+    AccountsInclude,
+    AccountsExclude,
+}
+
+impl ConfigMgmtMsgFilterTransactions {
+    pub fn as_str(&self) -> &str {
+        match *self {
+            Self::AccountsInclude => "accounts.include",
+            Self::AccountsExclude => "accounts.exclude",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigMgmtMsgAction {
+    Add,
+    Remove,
 }
