@@ -1,6 +1,9 @@
 use {
     crate::{
-        admin::{AdminError, ConfigMgmt, ConfigMgmtMsg},
+        admin::{
+            AdminError, ConfigMgmt, ConfigMgmtMsg, ConfigMgmtMsgAction, ConfigMgmtMsgFilter,
+            ConfigMgmtMsgFilterAccounts, ConfigMgmtMsgFilterTransactions,
+        },
         config::{
             ConfigAccountsFilter, ConfigFilters, ConfigSlotsFilter, ConfigTransactionsFilter,
         },
@@ -103,6 +106,19 @@ impl Filters {
                             info!("Update filters: {:?}", locked);
                         }
                     }
+                    Some(ConfigMgmtMsg::PubkeysSet {
+                        filter, action, pubkey
+                    }) => {
+                        let mut locked = inner.lock().await;
+                        match filter {
+                            ConfigMgmtMsgFilter::Accounts { name, kind } => {
+                                locked.accounts.change_pubkeys(name, kind, action, pubkey, logs)
+                            },
+                            ConfigMgmtMsgFilter::Transactions {name, kind } => {
+                                locked.transactions.change_pubkeys(name, kind, action, pubkey, logs)
+                            },
+                        }
+                    }
                     None => {
                         error!("filters changes subscription failed");
                         break;
@@ -139,74 +155,92 @@ impl Filters {
 }
 
 #[derive(Debug, Default, Clone)]
+struct AccountsFilterExistence {
+    account: bool,
+    owner: bool,
+    data_size: bool,
+    tokenkeg_owner: bool,
+    tokenkeg_delegate: bool,
+}
+
+impl AccountsFilterExistence {
+    fn is_empty(&self) -> bool {
+        !(self.account
+            || self.owner
+            || self.data_size
+            || self.tokenkeg_owner
+            || self.tokenkeg_delegate)
+    }
+}
+
+#[derive(Debug, Default, Clone)]
 struct AccountsFilter {
-    filters: Vec<String>,
+    filters: HashMap<String, AccountsFilterExistence>,
     account: HashMap<Pubkey, HashSet<String>>,
-    account_required: HashSet<String>,
+    account_required: HashMap<String, usize>,
     owner: HashMap<Pubkey, HashSet<String>>,
-    owner_required: HashSet<String>,
+    owner_required: HashMap<String, usize>,
     data_size: HashMap<usize, HashSet<String>>,
-    data_size_required: HashSet<String>,
+    data_size_required: HashMap<String, usize>,
     tokenkeg_owner: HashMap<Pubkey, HashSet<String>>,
-    tokenkeg_owner_required: HashSet<String>,
+    tokenkeg_owner_required: HashMap<String, usize>,
     tokenkeg_delegate: HashMap<Pubkey, HashSet<String>>,
-    tokenkeg_delegate_required: HashSet<String>,
+    tokenkeg_delegate_required: HashMap<String, usize>,
 }
 
 impl AccountsFilter {
     pub fn new(filters: HashMap<String, ConfigAccountsFilter>) -> Self {
         let mut this = Self::default();
         for (name, filter) in filters.into_iter() {
-            let mut not_empty = false;
-            not_empty |= Self::set(
-                &mut this.account,
-                &mut this.account_required,
-                &name,
-                filter
-                    .account
-                    .into_iter()
-                    .flat_map(|value| value.into_iter()),
-            );
-            not_empty |= Self::set(
-                &mut this.owner,
-                &mut this.owner_required,
-                &name,
-                filter.owner.into_iter().flat_map(|value| value.into_iter()),
-            );
-            not_empty |= Self::set(
-                &mut this.data_size,
-                &mut this.data_size_required,
-                &name,
-                filter.data_size.into_iter(),
-            );
-            not_empty |= Self::set(
-                &mut this.tokenkeg_owner,
-                &mut this.tokenkeg_owner_required,
-                &name,
-                filter
-                    .tokenkeg_owner
-                    .into_iter()
-                    .flat_map(|value| value.into_iter()),
-            );
-            not_empty |= Self::set(
-                &mut this.tokenkeg_delegate,
-                &mut this.tokenkeg_delegate_required,
-                &name,
-                filter
-                    .tokenkeg_delegate
-                    .into_iter()
-                    .flat_map(|value| value.into_iter()),
-            );
-            if not_empty {
-                this.filters.push(name);
-            }
+            let existence = AccountsFilterExistence {
+                account: Self::set(
+                    &mut this.account,
+                    &mut this.account_required,
+                    &name,
+                    filter
+                        .account
+                        .into_iter()
+                        .flat_map(|value| value.into_iter()),
+                ),
+                owner: Self::set(
+                    &mut this.owner,
+                    &mut this.owner_required,
+                    &name,
+                    filter.owner.into_iter().flat_map(|value| value.into_iter()),
+                ),
+                data_size: Self::set(
+                    &mut this.data_size,
+                    &mut this.data_size_required,
+                    &name,
+                    filter.data_size.into_iter(),
+                ),
+                tokenkeg_owner: Self::set(
+                    &mut this.tokenkeg_owner,
+                    &mut this.tokenkeg_owner_required,
+                    &name,
+                    filter
+                        .tokenkeg_owner
+                        .into_iter()
+                        .flat_map(|value| value.into_iter()),
+                ),
+                tokenkeg_delegate: Self::set(
+                    &mut this.tokenkeg_delegate,
+                    &mut this.tokenkeg_delegate_required,
+                    &name,
+                    filter
+                        .tokenkeg_delegate
+                        .into_iter()
+                        .flat_map(|value| value.into_iter()),
+                ),
+            };
+            this.filters.insert(name, existence);
         }
         this
     }
 
     fn set<Q, I>(
         map: &mut HashMap<Q, HashSet<String>>,
-        set_required: &mut HashSet<String>,
+        map_required: &mut HashMap<String, usize>,
         name: &str,
         keys: I,
     ) -> bool
@@ -214,17 +248,92 @@ impl AccountsFilter {
         Q: Hash + Eq + Clone,
         I: Iterator<Item = Q>,
     {
-        let mut empty = true;
+        let mut count = 0;
         for key in keys {
-            empty = false;
+            count += 1;
             map.entry(key).or_default().insert(name.to_string());
         }
 
-        if empty {
-            false
-        } else {
-            set_required.insert(name.to_string());
+        if count > 0 {
+            map_required.insert(name.to_string(), count);
             true
+        } else {
+            false
+        }
+    }
+
+    pub fn change_pubkeys(
+        &mut self,
+        name: String,
+        target: ConfigMgmtMsgFilterAccounts,
+        action: ConfigMgmtMsgAction,
+        pubkey: Pubkey,
+        logs: bool,
+    ) {
+        if let Some(existence) = self.filters.get_mut(&name) {
+            let (map, map_required, existence_field) = match target {
+                ConfigMgmtMsgFilterAccounts::Account => (
+                    &mut self.account,
+                    &mut self.account_required,
+                    &mut existence.account,
+                ),
+                ConfigMgmtMsgFilterAccounts::Owner => (
+                    &mut self.owner,
+                    &mut self.owner_required,
+                    &mut existence.owner,
+                ),
+                ConfigMgmtMsgFilterAccounts::TokenkegOwner => (
+                    &mut self.tokenkeg_owner,
+                    &mut self.tokenkeg_owner_required,
+                    &mut existence.tokenkeg_owner,
+                ),
+                ConfigMgmtMsgFilterAccounts::TokenkegDelegate => (
+                    &mut self.tokenkeg_delegate,
+                    &mut self.tokenkeg_delegate_required,
+                    &mut existence.tokenkeg_delegate,
+                ),
+            };
+
+            if let Some(action) = match action {
+                ConfigMgmtMsgAction::Add => {
+                    let set = map.entry(pubkey).or_default();
+                    if set.insert(name.clone()) {
+                        let value = map_required.entry(name.clone()).or_default();
+                        *value += 1;
+                        *existence_field = true;
+                        logs.then(|| "added to")
+                    } else {
+                        None
+                    }
+                }
+                ConfigMgmtMsgAction::Remove => match map.get_mut(&pubkey) {
+                    Some(set) if set.contains(&name) => {
+                        set.remove(&name);
+                        if set.is_empty() {
+                            map.remove(&pubkey);
+                        }
+
+                        if let Some(value) = map_required.get_mut(&name) {
+                            *value -= 1;
+                            if *value == 0 {
+                                *existence_field = false;
+                            }
+                        }
+
+                        logs.then(|| "removed from")
+                    }
+                    _ => None,
+                },
+            } {
+                info!(
+                    "{} {} the accounts filter {:?}.{:?}",
+                    pubkey,
+                    action,
+                    name,
+                    target.as_str()
+                );
+                warn!("config: {:?}", *self);
+            }
         }
     }
 }
@@ -329,33 +438,37 @@ impl<'a> AccountsFilterMatch<'a> {
         self.accounts_filter
             .filters
             .iter()
-            .filter(|name| {
+            .filter_map(|(name, existence)| {
                 let name = name.as_str();
                 let af = &self.accounts_filter;
 
                 // If filter name in required but not in matched => return `false`
-                if af.account_required.contains(name) && !self.account.contains(name) {
-                    return false;
+                if af.account_required.contains_key(name) && !self.account.contains(name) {
+                    return None;
                 }
-                if af.owner_required.contains(name) && !self.owner.contains(name) {
-                    return false;
+                if af.owner_required.contains_key(name) && !self.owner.contains(name) {
+                    return None;
                 }
-                if af.data_size_required.contains(name) && !self.data_size.contains(name) {
-                    return false;
+                if af.data_size_required.contains_key(name) && !self.data_size.contains(name) {
+                    return None;
                 }
-                if af.tokenkeg_owner_required.contains(name) && !self.tokenkeg_owner.contains(name)
+                if af.tokenkeg_owner_required.contains_key(name)
+                    && !self.tokenkeg_owner.contains(name)
                 {
-                    return false;
+                    return None;
                 }
-                if af.tokenkeg_delegate_required.contains(name)
+                if af.tokenkeg_delegate_required.contains_key(name)
                     && !self.tokenkeg_delegate.contains(name)
                 {
-                    return false;
+                    return None;
                 }
 
-                true
+                if existence.is_empty() {
+                    None
+                } else {
+                    Some(name.to_string())
+                }
             })
-            .cloned()
             .collect()
     }
 }
@@ -401,6 +514,36 @@ impl TransactionsFilter {
                     )
                 })
                 .collect(),
+        }
+    }
+
+    fn change_pubkeys(
+        &mut self,
+        name: String,
+        target: ConfigMgmtMsgFilterTransactions,
+        action: ConfigMgmtMsgAction,
+        pubkey: Pubkey,
+        logs: bool,
+    ) {
+        if let Some(filter) = self.filters.get_mut(&name) {
+            let set = match target {
+                ConfigMgmtMsgFilterTransactions::AccountsInclude => &mut filter.accounts_include,
+                ConfigMgmtMsgFilterTransactions::AccountsExclude => &mut filter.accounts_exclude,
+            };
+            if let Some(action) = match action {
+                ConfigMgmtMsgAction::Add => (set.insert(pubkey) && logs).then(|| "added to"),
+                ConfigMgmtMsgAction::Remove => {
+                    (set.remove(&pubkey) && logs).then(|| "removed from")
+                }
+            } {
+                info!(
+                    "{} {} the transcation filter {:?}.{:?}",
+                    pubkey,
+                    action,
+                    name,
+                    target.as_str()
+                );
+            }
         }
     }
 

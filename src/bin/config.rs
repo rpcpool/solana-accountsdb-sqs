@@ -1,9 +1,12 @@
 use {
-    anyhow::Result,
+    anyhow::{anyhow, Result},
     clap::{Parser, Subcommand},
     redis::AsyncCommands,
     solana_geyser_sqs::{
-        admin::{ConfigMgmt, ConfigMgmtMsg},
+        admin::{
+            ConfigMgmt, ConfigMgmtMsg, ConfigMgmtMsgAction, ConfigMgmtMsgFilter,
+            ConfigMgmtMsgFilterAccounts, ConfigMgmtMsgFilterTransactions,
+        },
         config::{Config, ConfigAccountsFilter, ConfigTransactionsFilter, PubkeyWithSource},
     },
     solana_sdk::pubkey::Pubkey,
@@ -38,7 +41,8 @@ enum ArgsAction {
     #[clap(subcommand)]
     Set(ArgsActionSet),
     /// Send update signal
-    SendUpdateSignal,
+    #[clap(subcommand)]
+    SendSignal(ArgsActionSendSignal),
 }
 
 #[derive(Debug, Subcommand)]
@@ -153,18 +157,44 @@ pub enum ArgsActionSet {
     },
 }
 
+#[derive(Debug, Subcommand)]
+pub enum ArgsActionSendSignal {
+    /// Reload whole config
+    Global,
+    /// Add or remove Public Key
+    PubkeysSet {
+        /// Filter type: `accounts`, `transactions`
+        #[clap(short, long)]
+        filter: String,
+        /// Filter name
+        #[clap(short, long)]
+        name: String,
+        /// Kind of filter: `account`, `owner`, `tokenkeg_owner`, `tokenkeg_delegate`, `accounts_include`, `accounts_exclude`
+        #[clap(short, long)]
+        kind: String,
+        /// Applied action: `add`, `remove`
+        #[clap(short, long)]
+        action: String,
+        /// Public Key
+        #[clap(short, long)]
+        pubkey: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
 
     let config = Config::load_from_file(&args.config)?;
-    let admin =
-        ConfigMgmt::new(config.filters.admin.clone().expect("defined admin config")).await?;
+    let config_admin = config.filters.admin.clone().expect("defined admin config");
+    let admin = ConfigMgmt::new(config_admin.clone()).await?;
 
     match args.action {
         ArgsAction::Init => {
             let mut config = config.filters.clone();
             config.admin = None;
+            let mut connection = config_admin.redis.get_async_connection().await?;
+            config.load_pubkeys(&mut connection).await?;
             admin.set_global_config(&config).await?;
             println!("Config uploaded");
         }
@@ -308,8 +338,45 @@ async fn main() -> Result<()> {
                 connection.srem(&name, pubkey).await?;
             }
         },
-        ArgsAction::SendUpdateSignal => {
-            admin.send_message(&ConfigMgmtMsg::Global).await?;
+        ArgsAction::SendSignal(signal) => {
+            let msg = match signal {
+                ArgsActionSendSignal::Global => ConfigMgmtMsg::Global,
+                ArgsActionSendSignal::PubkeysSet {
+                    filter,
+                    name,
+                    kind,
+                    action,
+                    pubkey,
+                } => ConfigMgmtMsg::PubkeysSet {
+                    filter: match filter.as_str() {
+                        "accounts" => ConfigMgmtMsgFilter::Accounts {
+                            name,
+                            kind: serde_json::from_value::<ConfigMgmtMsgFilterAccounts>(
+                                serde_json::Value::String(kind),
+                            )?,
+                        },
+                        "transactions" => ConfigMgmtMsgFilter::Transactions {
+                            name,
+                            kind: serde_json::from_value::<ConfigMgmtMsgFilterTransactions>(
+                                serde_json::Value::String(kind),
+                            )?,
+                        },
+                        filter => {
+                            return Err(anyhow!(
+                                "unknown variant `{}`, expected {:?}",
+                                filter,
+                                &["accounts", "transactions"]
+                            ))
+                        }
+                    },
+                    action: serde_json::from_value::<ConfigMgmtMsgAction>(
+                        serde_json::Value::String(action),
+                    )?,
+                    pubkey: pubkey.parse::<Pubkey>()?,
+                },
+            };
+            println!("Send message: {}", serde_json::to_string(&msg)?);
+            admin.send_message(&msg).await?;
         }
     }
 

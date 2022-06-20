@@ -398,8 +398,11 @@ impl PubkeyWithSource {
         if let Self::Redis { set, keys } = self {
             match keys {
                 Some(keys) => {
+                    pipe.del(&set);
                     let keys = keys.iter().map(|k| k.to_string()).collect::<Vec<_>>();
-                    pipe.del(&set).sadd(&set, &keys);
+                    if !keys.is_empty() {
+                        pipe.sadd(&set, &keys);
+                    }
                 }
                 None => return Err(PubkeyWithSourceError::ExpectedLoadedPubkeys),
             }
@@ -407,7 +410,7 @@ impl PubkeyWithSource {
         Ok(())
     }
 
-    fn deserialize_pubkey<'de, D>(deserializer: D) -> Result<Pubkey, D::Error>
+    pub fn deserialize_pubkey<'de, D>(deserializer: D) -> Result<Pubkey, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -415,7 +418,7 @@ impl PubkeyWithSource {
             .and_then(|pubkey| pubkey.parse().map_err(de::Error::custom))
     }
 
-    fn serialize_pubkey<S>(pubkey: &Pubkey, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize_pubkey<S>(pubkey: &Pubkey, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {

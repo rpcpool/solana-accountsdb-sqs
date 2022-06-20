@@ -227,6 +227,37 @@ Message matching a transaction filter:
 }
 ```
 
+### Message attributes
+
+Except always existed message attributes `compression` and `md5` it's possible to set custom attributes in `sqs` config key:
+
+```json
+"sqs": {
+    "attributes": {
+        "node": "my-node-1",
+        "any-other-attribute": "value of any other attribute"
+    }
+}
+```
+
+### Large Public Keys sets in config
+
+If we want to start watch for a lot of Public Keys our config will be huge and for any change we will need upload a large object to Redis. As alternative plugin allow to use Redis `Set` which store Public Keys.
+
+Config example:
+
+```json
+{
+    "accounts": {
+        "filter-by-account": {
+            "account": [{"set": "filter-by-account-keys"}]
+        }
+    }
+}
+```
+
+With these config plugin will expect Public Keys in `filter-by-account-keys`.
+
 ### Config reload
 
 It's possible to reload filters without re-starting solana-validator.
@@ -249,33 +280,15 @@ Now plugin will load config from Redis (`config` key in current example). Config
 
 Each time when config need to be reloaded these data should be published to channel (`admin` in current example): `{"target":"global"}`.
 
-### Large Public Keys sets in config
+#### Small reloads
 
-If we want to start watch for a lot of Public Keys our config will be huge and for any change we will need upload a large object to Redis. As alternative plugin allow to use Redis `Set` which store Public Keys.
+If we have large set of Public Keys it's not convenient reload whole config because we will to fetch all the data from Redis. Instead you can sent command which add or remove Public Key from the filter. Data in Redis should be updated by you, same as for global reload.
 
-Config example:
+For example:
 
-```json
-{
-    "accounts": {
-        "filter-by-account": {
-            "account": [{"set": "filter-by-account-keys"}]
-        }
-    }
-}
-```
-
-With these config plugin will expect Public Keys in `filter-by-account-keys`.
-
-### Message attributes
-
-Except always existed message attributes `compression` and `md5` it's possible to set custom attributes in `sqs` config key:
-
-```json
-"sqs": {
-    "attributes": {
-        "node": "my-node-1",
-        "any-other-attribute": "value of any other attribute"
-    }
-}
+```bash
+$ cargo run --bin config -- --config ./config.json send-signal pubkeys-set --action add --filter accounts --kind account --name example --pubkey MY_PUBLIC_KEY
+Send message: {"target":"pubkeys_set","filter":{"accounts":{"name":"example","kind":"account"}},"action":"add","pubkey":"MY_PUBLIC_KEY"}
+$ cargo run --bin config -- --config ./config.json send-signal pubkeys-set --action remove --filter accounts --kind account --name example --pubkey MY_PUBLIC_KEY
+Send message: {"target":"pubkeys_set","filter":{"accounts":{"name":"example","kind":"account"}},"action":"remove","pubkey":"MY_PUBLIC_KEY"}
 ```
