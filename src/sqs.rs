@@ -403,8 +403,8 @@ impl AwsSqsClient {
             transaction: Transaction {
                 signatures: transaction.transaction.signatures().into(),
                 message: TransactionMessage {
-                    header: message.header().clone(),
-                    account_keys: message.account_keys_iter().cloned().collect(),
+                    header: *message.header(),
+                    account_keys: message.account_keys().iter().cloned().collect(),
                     recent_blockhash: *message.recent_blockhash(),
                     instructions: message.instructions().to_vec(),
                 },
