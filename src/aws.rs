@@ -59,6 +59,13 @@ impl SqsMessageAttributes {
         self
     }
 
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.map
+            .get(key)
+            .and_then(|attr| attr.string_value.as_ref())
+            .map(|s| s.as_str())
+    }
+
     pub fn into_inner(self) -> HashMap<String, MessageAttributeValue> {
         self.map
     }

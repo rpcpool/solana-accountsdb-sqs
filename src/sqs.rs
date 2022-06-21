@@ -256,21 +256,24 @@ impl SendMessage {
         .to_string()
     }
 
-    fn s3_key(&self) -> String {
+    fn s3_key(&self, node: &str) -> String {
         match self {
             Self::Slot((status, slot)) => {
                 warn!("Slot is not expected to be uploaded to S3");
-                format!("slot-{}-{:?}", slot, status)
+                format!("{}/slot/{}-{:?}", node, slot, status)
             }
             Self::Account((account, _filters)) => {
                 format!(
-                    "account-{}-{}-{}",
-                    account.slot, account.pubkey, account.write_version
+                    "{}/account/{}/{}-{}",
+                    node, account.slot, account.pubkey, account.write_version
                 )
             }
             Self::Transaction((transaction, _filters)) => {
                 warn!("Transaction is not expected to be uploaded to S3");
-                format!("transaction-{}-{}", transaction.slot, transaction.signature)
+                format!(
+                    "{}/transaction/{}/{}",
+                    node, transaction.slot, transaction.signature
+                )
             }
         }
     }
@@ -844,7 +847,11 @@ impl AwsSqsClient {
                     async move {
                         let message_body = match s3 {
                             Some(s3) => {
-                                let key = message.message.s3_key();
+                                let key = message.message.s3_key(
+                                    attributes
+                                        .get("node")
+                                        .expect("node attribute should exists"),
+                                );
                                 if let Err(error) = s3
                                     .put_object(key.clone(), message.payload.into_bytes())
                                     .await
