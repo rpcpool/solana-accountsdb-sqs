@@ -47,7 +47,7 @@ pub struct SqsMessageAttributes {
 }
 
 impl SqsMessageAttributes {
-    pub fn insert<S1: Into<String>, S2: Into<String>>(&mut self, key: S1, value: S2) -> &Self {
+    pub fn insert<S1: Into<String>, S2: Into<String>>(&mut self, key: S1, value: S2) -> &mut Self {
         self.map.insert(
             key.into(),
             MessageAttributeValue {
@@ -69,7 +69,7 @@ impl<'de> Deserialize<'de> for SqsMessageAttributes {
     where
         D: Deserializer<'de>,
     {
-        let not_allowed = vec!["compression", "md5"];
+        let not_allowed = vec!["compression", "md5", "node"];
 
         let mut attributes = SqsMessageAttributes::default();
 
@@ -102,8 +102,9 @@ impl SqsClient {
     // individual lengths of all of the batched messages) are both 256 KB (262,144 bytes).
     pub const REQUEST_LIMIT: usize = 250_000;
 
-    pub fn new(config: ConfigAwsSqs) -> AwsResult<Self> {
+    pub fn new<S: Into<String>>(mut config: ConfigAwsSqs, node: S) -> AwsResult<Self> {
         let client = aws_create_client(config.auth)?;
+        config.attributes.insert("node", node.into());
         Ok(Self {
             client: RusotoSqsClient::new_with_client(client, config.region),
             queue_url: config.url,

@@ -67,7 +67,7 @@ async fn main() -> Result<()> {
 }
 
 async fn send_loop(config: Config) -> anyhow::Result<()> {
-    let sqs = SqsClient::new(config.sqs.clone())?;
+    let sqs = SqsClient::new(config.sqs.clone(), "my-node-id")?;
     let s3 = S3Client::new(config.s3.clone())?;
 
     loop {
@@ -110,7 +110,7 @@ async fn send_loop(config: Config) -> anyhow::Result<()> {
 }
 
 async fn receive_loop(args: Args, config: Config) -> anyhow::Result<()> {
-    let sqs = SqsClient::new(config.sqs)?;
+    let sqs = SqsClient::new(config.sqs, "my-node-id")?;
     let s3 = S3Client::new(config.s3)?;
 
     loop {

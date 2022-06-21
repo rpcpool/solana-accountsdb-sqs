@@ -334,7 +334,7 @@ impl AwsSqsClient {
             ));
         }
 
-        SqsClient::new(config.sqs.clone())?.check().await?;
+        SqsClient::new(config.sqs.clone(), "")?.check().await?;
         S3Client::new(config.s3.clone())?.check().await?;
 
         let startup_job = Arc::new(AtomicBool::new(true));
@@ -432,7 +432,7 @@ impl AwsSqsClient {
         let sqs_max_requests = config.sqs.max_requests;
         let commitment_level = config.messages.commitment_level;
         let accounts_data_compression = config.messages.accounts_data_compression;
-        let sqs = SqsClient::new(config.sqs)?;
+        let sqs = SqsClient::new(config.sqs, config.node)?;
         let s3 = S3Client::new(config.s3)?;
         let filters = Filters::new(config.filters, config.log.filters).await?;
 

@@ -1,5 +1,6 @@
 {
     "libpath": "libsolana_geyser_sqs.so",
+    "node": "my-unique-node-name",
     "log": {
         "level": "info",
         "filters": false
@@ -16,8 +17,7 @@
         "url": "https://sqs.us-east-2.amazonaws.com/<account_id>/<accounts_queue>",
         "max_requests": "10_000",
         "attributes": {
-            "node": "my-node-1",
-            "any-other-attribute": "value of any other attribute"
+            "my-custom-attribute": "value of the attribute"
         }
     },
     "s3": {
