@@ -2,7 +2,7 @@ use {
     crate::{
         admin::{
             AdminError, ConfigMgmt, ConfigMgmtMsg, ConfigMgmtMsgAction, ConfigMgmtMsgFilter,
-            ConfigMgmtMsgFilterAccounts, ConfigMgmtMsgFilterTransactions,
+            ConfigMgmtMsgFilterAccounts, ConfigMgmtMsgFilterTransactions, ConfigMgmtMsgRequest,
         },
         config::{
             ConfigAccountsFilter, ConfigFilters, ConfigSlotsFilter, ConfigTransactionsFilter,
@@ -54,7 +54,7 @@ pub struct Filters {
 }
 
 impl Filters {
-    pub async fn new(mut config: ConfigFilters, logs: bool) -> FiltersResult<Self> {
+    pub async fn new(mut config: ConfigFilters, node: String, logs: bool) -> FiltersResult<Self> {
         let admin = match config.admin {
             Some(admin_config) => {
                 let admin = ConfigMgmt::new(admin_config).await?;
@@ -71,7 +71,13 @@ impl Filters {
 
         let (send, recv) = oneshot::channel();
         if let Some(admin) = admin {
-            tokio::spawn(Self::update_loop(admin, recv, logs, Arc::clone(&inner)));
+            tokio::spawn(Self::update_loop(
+                admin,
+                recv,
+                node,
+                logs,
+                Arc::clone(&inner),
+            ));
         }
 
         Ok(Self {
@@ -83,42 +89,90 @@ impl Filters {
     async fn update_loop(
         mut admin: ConfigMgmt,
         mut shutdown: oneshot::Receiver<()>,
+        node: String,
         logs: bool,
         inner: Arc<Mutex<FiltersInner>>,
     ) {
         loop {
             tokio::select! {
                 msg = admin.pubsub.next() => match msg {
-                    Some(ConfigMgmtMsg::Global) => {
-                        let config = match admin.get_global_config().await {
-                            Ok(config) => config,
-                            Err(error) => {
-                                error!("failed to read config on update: {:?}", error);
-                                continue
-                            },
-                        };
-
-                        let new_inner = FiltersInner::new(config);
-
-                        let mut locked = inner.lock().await;
-                        *locked = new_inner;
-                        if logs {
-                            info!("Update filters: {:?}", locked);
+                    Some(ConfigMgmtMsg::Request { id, action: ConfigMgmtMsgRequest::Ping }) => {
+                        if let Err(error) = admin.send_message(&ConfigMgmtMsg::Response {
+                            node: node.clone(),
+                            id: Some(id),
+                            result: Some("pong".to_owned()),
+                            error: None
+                        }).await {
+                            error!("failed to send admin message: {:?}", error);
                         }
                     }
-                    Some(ConfigMgmtMsg::PubkeysSet {
-                        filter, action, pubkey
-                    }) => {
+                    Some(ConfigMgmtMsg::Request { id, action: ConfigMgmtMsgRequest::Global }) => {
+                       let updated = match admin.get_global_config().await {
+                            Ok(config) => {
+                                let new_inner = FiltersInner::new(config);
+
+                                let mut locked = inner.lock().await;
+                                *locked = new_inner;
+                                if logs {
+                                    info!("Update filters: {:?}", locked);
+                                }
+
+                                Ok(())
+                            },
+                            Err(error) => Err(format!("failed to read config on update: {:?}", error))
+                        };
+
+                        let (result, error) = match updated {
+                            Ok(()) => (Some("ok".to_owned()), None),
+                            Err(error) => {
+                                if logs {
+                                    error!("{}", error);
+                                }
+                                (None, Some(error))
+                            }
+                        };
+
+                        if let Err(error) = admin.send_message(&ConfigMgmtMsg::Response {
+                            node: node.clone(),
+                            id: Some(id),
+                            result,
+                            error,
+                        }).await {
+                            error!("failed to send admin message: {:?}", error);
+                        }
+                    }
+                    Some(ConfigMgmtMsg::Request { id, action: ConfigMgmtMsgRequest::PubkeysSet { filter, action, pubkey } }) => {
                         let mut locked = inner.lock().await;
-                        match filter {
+                        let updated = match filter {
                             ConfigMgmtMsgFilter::Accounts { name, kind } => {
                                 locked.accounts.change_pubkeys(name, kind, action, pubkey, logs)
                             },
                             ConfigMgmtMsgFilter::Transactions {name, kind } => {
                                 locked.transactions.change_pubkeys(name, kind, action, pubkey, logs)
                             },
+                        };
+                        drop(locked);
+
+                        let (result, error) = match updated {
+                            Ok(()) => (Some("ok".to_owned()), None),
+                            Err(error) => {
+                                if logs {
+                                    error!("{}", error);
+                                }
+                                (None, Some(error))
+                            }
+                        };
+
+                        if let Err(error) = admin.send_message(&ConfigMgmtMsg::Response {
+                            node: node.clone(),
+                            id: Some(id),
+                            result,
+                            error,
+                        }).await {
+                            error!("failed to send admin message: {:?}", error);
                         }
                     }
+                    Some(ConfigMgmtMsg::Response { .. }) => {},
                     None => {
                         error!("filters changes subscription failed");
                         break;
@@ -269,72 +323,91 @@ impl AccountsFilter {
         action: ConfigMgmtMsgAction,
         pubkey: Pubkey,
         logs: bool,
-    ) {
-        if let Some(existence) = self.filters.get_mut(&name) {
-            let (map, map_required, existence_field) = match target {
-                ConfigMgmtMsgFilterAccounts::Account => (
-                    &mut self.account,
-                    &mut self.account_required,
-                    &mut existence.account,
-                ),
-                ConfigMgmtMsgFilterAccounts::Owner => (
-                    &mut self.owner,
-                    &mut self.owner_required,
-                    &mut existence.owner,
-                ),
-                ConfigMgmtMsgFilterAccounts::TokenkegOwner => (
-                    &mut self.tokenkeg_owner,
-                    &mut self.tokenkeg_owner_required,
-                    &mut existence.tokenkeg_owner,
-                ),
-                ConfigMgmtMsgFilterAccounts::TokenkegDelegate => (
-                    &mut self.tokenkeg_delegate,
-                    &mut self.tokenkeg_delegate_required,
-                    &mut existence.tokenkeg_delegate,
-                ),
-            };
+    ) -> Result<(), String> {
+        let existence = match self.filters.get_mut(&name) {
+            Some(value) => value,
+            None => return Err(format!("filter {} not found", name)),
+        };
 
-            if let Some(action) = match action {
-                ConfigMgmtMsgAction::Add => {
-                    let set = map.entry(pubkey).or_default();
-                    if set.insert(name.clone()) {
-                        let value = map_required.entry(name.clone()).or_default();
-                        *value += 1;
-                        *existence_field = true;
-                        logs.then(|| "added to")
-                    } else {
-                        None
+        let (map, map_required, existence_field) = match target {
+            ConfigMgmtMsgFilterAccounts::Account => (
+                &mut self.account,
+                &mut self.account_required,
+                &mut existence.account,
+            ),
+            ConfigMgmtMsgFilterAccounts::Owner => (
+                &mut self.owner,
+                &mut self.owner_required,
+                &mut existence.owner,
+            ),
+            ConfigMgmtMsgFilterAccounts::TokenkegOwner => (
+                &mut self.tokenkeg_owner,
+                &mut self.tokenkeg_owner_required,
+                &mut existence.tokenkeg_owner,
+            ),
+            ConfigMgmtMsgFilterAccounts::TokenkegDelegate => (
+                &mut self.tokenkeg_delegate,
+                &mut self.tokenkeg_delegate_required,
+                &mut existence.tokenkeg_delegate,
+            ),
+        };
+
+        if let Some(action) = match action {
+            ConfigMgmtMsgAction::Add => {
+                let set = map.entry(pubkey).or_default();
+                if !set.insert(name.clone()) {
+                    return Err(format!(
+                        "pubkey {} in filter {}.{} already exists",
+                        pubkey,
+                        name,
+                        target.as_str()
+                    ));
+                }
+
+                let value = map_required.entry(name.clone()).or_default();
+                *value += 1;
+                *existence_field = true;
+                logs.then(|| "added to")
+            }
+            ConfigMgmtMsgAction::Remove => {
+                let set = match map.get_mut(&pubkey) {
+                    Some(set) if set.contains(&name) => set,
+                    _ => {
+                        return Err(format!(
+                            "pubkey {} in filter {}.{} not exists",
+                            pubkey,
+                            name,
+                            target.as_str()
+                        ))
+                    }
+                };
+
+                set.remove(&name);
+                if set.is_empty() {
+                    map.remove(&pubkey);
+                }
+
+                if let Some(value) = map_required.get_mut(&name) {
+                    *value -= 1;
+                    if *value == 0 {
+                        *existence_field = false;
                     }
                 }
-                ConfigMgmtMsgAction::Remove => match map.get_mut(&pubkey) {
-                    Some(set) if set.contains(&name) => {
-                        set.remove(&name);
-                        if set.is_empty() {
-                            map.remove(&pubkey);
-                        }
 
-                        if let Some(value) = map_required.get_mut(&name) {
-                            *value -= 1;
-                            if *value == 0 {
-                                *existence_field = false;
-                            }
-                        }
-
-                        logs.then(|| "removed from")
-                    }
-                    _ => None,
-                },
-            } {
-                info!(
-                    "{} {} the accounts filter {:?}.{:?}",
-                    pubkey,
-                    action,
-                    name,
-                    target.as_str()
-                );
-                warn!("config: {:?}", *self);
+                logs.then(|| "removed from")
             }
+        } {
+            info!(
+                "{} {} the accounts filter {:?}.{:?}",
+                pubkey,
+                action,
+                name,
+                target.as_str()
+            );
+            warn!("config: {:?}", *self);
         }
+
+        Ok(())
     }
 }
 
@@ -524,27 +597,50 @@ impl TransactionsFilter {
         action: ConfigMgmtMsgAction,
         pubkey: Pubkey,
         logs: bool,
-    ) {
-        if let Some(filter) = self.filters.get_mut(&name) {
-            let set = match target {
-                ConfigMgmtMsgFilterTransactions::AccountsInclude => &mut filter.accounts_include,
-                ConfigMgmtMsgFilterTransactions::AccountsExclude => &mut filter.accounts_exclude,
-            };
-            if let Some(action) = match action {
-                ConfigMgmtMsgAction::Add => (set.insert(pubkey) && logs).then(|| "added to"),
-                ConfigMgmtMsgAction::Remove => {
-                    (set.remove(&pubkey) && logs).then(|| "removed from")
+    ) -> Result<(), String> {
+        let filter = match self.filters.get_mut(&name) {
+            Some(value) => value,
+            None => return Err(format!("filter {} not found", name)),
+        };
+
+        let set = match target {
+            ConfigMgmtMsgFilterTransactions::AccountsInclude => &mut filter.accounts_include,
+            ConfigMgmtMsgFilterTransactions::AccountsExclude => &mut filter.accounts_exclude,
+        };
+        if let Some(action) = match action {
+            ConfigMgmtMsgAction::Add => {
+                if !set.insert(pubkey) {
+                    return Err(format!(
+                        "pubkey {} in filter {}.{} already exists",
+                        pubkey,
+                        name,
+                        target.as_str()
+                    ));
                 }
-            } {
-                info!(
-                    "{} {} the transcation filter {:?}.{:?}",
-                    pubkey,
-                    action,
-                    name,
-                    target.as_str()
-                );
+                logs.then(|| "added to")
             }
+            ConfigMgmtMsgAction::Remove => {
+                if set.remove(&pubkey) {
+                    return Err(format!(
+                        "pubkey {} in filter {}.{} not exists",
+                        pubkey,
+                        name,
+                        target.as_str()
+                    ));
+                }
+                logs.then(|| "removed from")
+            }
+        } {
+            info!(
+                "{} {} the transcation filter {:?}.{:?}",
+                pubkey,
+                action,
+                name,
+                target.as_str()
+            );
         }
+
+        Ok(())
     }
 
     pub fn get_filters(&self, transaction: &ReplicaTransactionInfo) -> Vec<String> {

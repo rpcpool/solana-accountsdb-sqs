@@ -1,16 +1,18 @@
 use {
     anyhow::{anyhow, Result},
     clap::{Parser, Subcommand},
+    futures::stream::StreamExt,
     redis::AsyncCommands,
     solana_geyser_sqs::{
         admin::{
             ConfigMgmt, ConfigMgmtMsg, ConfigMgmtMsgAction, ConfigMgmtMsgFilter,
-            ConfigMgmtMsgFilterAccounts, ConfigMgmtMsgFilterTransactions,
+            ConfigMgmtMsgFilterAccounts, ConfigMgmtMsgFilterTransactions, ConfigMgmtMsgRequest,
         },
         config::{Config, ConfigAccountsFilter, ConfigTransactionsFilter, PubkeyWithSource},
     },
     solana_sdk::pubkey::Pubkey,
     std::{collections::HashSet, hash::Hash},
+    tokio::time::{sleep_until, Duration, Instant},
 };
 
 #[derive(Debug, Parser)]
@@ -159,6 +161,8 @@ pub enum ArgsActionSet {
 
 #[derive(Debug, Subcommand)]
 pub enum ArgsActionSendSignal {
+    /// Send ping
+    Ping,
     /// Reload whole config
     Global,
     /// Add or remove Public Key
@@ -187,7 +191,7 @@ async fn main() -> Result<()> {
 
     let config = Config::load_from_file(&args.config)?;
     let config_admin = config.filters.admin.clone().expect("defined admin config");
-    let admin = ConfigMgmt::new(config_admin.clone()).await?;
+    let mut admin = ConfigMgmt::new(config_admin.clone()).await?;
 
     match args.action {
         ArgsAction::Init => {
@@ -339,15 +343,16 @@ async fn main() -> Result<()> {
             }
         },
         ArgsAction::SendSignal(signal) => {
-            let msg = match signal {
-                ArgsActionSendSignal::Global => ConfigMgmtMsg::Global,
+            let action = match signal {
+                ArgsActionSendSignal::Ping => ConfigMgmtMsgRequest::Ping,
+                ArgsActionSendSignal::Global => ConfigMgmtMsgRequest::Global,
                 ArgsActionSendSignal::PubkeysSet {
                     filter,
                     name,
                     kind,
                     action,
                     pubkey,
-                } => ConfigMgmtMsg::PubkeysSet {
+                } => ConfigMgmtMsgRequest::PubkeysSet {
                     filter: match filter.as_str() {
                         "accounts" => ConfigMgmtMsgFilter::Accounts {
                             name,
@@ -375,8 +380,34 @@ async fn main() -> Result<()> {
                     pubkey: pubkey.parse::<Pubkey>()?,
                 },
             };
+            let id: u64 = rand::random();
+            let msg = ConfigMgmtMsg::Request { id, action };
             println!("Send message: {}", serde_json::to_string(&msg)?);
             admin.send_message(&msg).await?;
+
+            let sleep = sleep_until(Instant::now() + Duration::from_secs(30));
+            tokio::pin!(sleep);
+
+            loop {
+                tokio::select! {
+                    _ = &mut sleep => {
+                        eprintln!("failed to get response");
+                        break
+                    }
+                    msg = admin.pubsub.next() => match msg {
+                        Some(ConfigMgmtMsg::Response { node, id: rid, result, error }) if rid == Some(id) => {
+                            if let Some(result) = result {
+                                println!("Received result from node {:?}: {}", node, result);
+                            }
+                            if let Some(error) = error {
+                                eprintln!("Received error from node {:?}: {}", node, error);
+                            }
+                            break
+                        }
+                        _ => {}
+                    }
+                }
+            }
         }
     }
 

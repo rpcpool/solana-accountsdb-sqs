@@ -85,8 +85,27 @@ impl ConfigMgmt {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(tag = "target", rename_all = "snake_case")]
+#[serde(untagged, rename_all = "snake_case")]
 pub enum ConfigMgmtMsg {
+    Request {
+        id: u64,
+        #[serde(flatten)]
+        action: ConfigMgmtMsgRequest,
+    },
+    Response {
+        node: String,
+        id: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "method", content = "params", rename_all = "snake_case")]
+pub enum ConfigMgmtMsgRequest {
+    Ping,
     Global,
     PubkeysSet {
         filter: ConfigMgmtMsgFilter,

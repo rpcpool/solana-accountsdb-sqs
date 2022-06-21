@@ -2532,6 +2532,7 @@ dependencies = [
  "log",
  "md-5 0.10.1",
  "prometheus",
+ "rand",
  "redis",
  "rusoto_core",
  "rusoto_credential",
