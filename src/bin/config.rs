@@ -45,6 +45,8 @@ enum ArgsAction {
     /// Send update signal
     #[clap(subcommand)]
     SendSignal(ArgsActionSendSignal),
+    /// Watch for commands in Redis
+    Watch,
 }
 
 #[derive(Debug, Subcommand)]
@@ -183,8 +185,6 @@ pub enum ArgsActionSendSignal {
         #[clap(short, long)]
         pubkey: String,
     },
-    /// Watch for commands in Redis
-    Watch,
 }
 
 #[tokio::main]
@@ -381,13 +381,6 @@ async fn main() -> Result<()> {
                     )?,
                     pubkey: pubkey.parse::<Pubkey>()?,
                 },
-                ArgsActionSendSignal::Watch => {
-                    while let Some(msg) = admin.pubsub.next().await {
-                        println!("Received msg: {}", serde_json::to_string(&msg).unwrap());
-                    }
-                    println!("stream is finished");
-                    return Ok(());
-                }
             };
             let id: u64 = rand::random();
             let msg = ConfigMgmtMsg::Request { id, action };
@@ -405,18 +398,21 @@ async fn main() -> Result<()> {
                     }
                     msg = admin.pubsub.next() => match msg {
                         Some(ConfigMgmtMsg::Response { node, id: rid, result, error }) if rid == Some(id) => {
-                            if let Some(result) = result {
-                                println!("Received result from node {:?}: {}", node, result);
-                            }
-                            if let Some(error) = error {
-                                eprintln!("Received error from node {:?}: {}", node, error);
-                            }
+                            let msg = ConfigMgmtMsg::Response{ node: node.clone(), id: rid, result, error };
+                            println!("Received msg from node {:?}: {}", node, serde_json::to_string(&msg)?);
                             break
                         }
                         _ => {}
                     }
                 }
             }
+        }
+        ArgsAction::Watch => {
+            while let Some(msg) = admin.pubsub.next().await {
+                println!("Received msg: {}", serde_json::to_string(&msg).unwrap());
+            }
+            println!("stream is finished");
+            return Ok(());
         }
     }
 

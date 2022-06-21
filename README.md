@@ -278,7 +278,7 @@ For activating reloading you need to add `admin` section to config for connectio
 
 Now plugin will load config from Redis (`config` key in current example). Config format in Redis is same as in `json` file except that `admin` section should not exists.
 
-Each time when config need to be reloaded these data should be published to channel (`admin` in current example): `{"target":"global"}`.
+Each time when config need to be reloaded these data should be published to channel (`admin` in current example): `{"id":0,"method":"global"}`. As response you will get: `{"node":"my-unique-node-name","id":0,"result":"ok"}`.
 
 #### Small reloads
 
@@ -288,7 +288,9 @@ For example:
 
 ```bash
 $ cargo run --bin config -- --config ./config.json send-signal pubkeys-set --action add --filter accounts --kind account --name example --pubkey MY_PUBLIC_KEY
-Send message: {"target":"pubkeys_set","filter":{"accounts":{"name":"example","kind":"account"}},"action":"add","pubkey":"MY_PUBLIC_KEY"}
+Send message: {"id":13228547606808916809,"method":"pubkeys_set","params":{"filter":{"accounts":{"name":"example","kind":"account"}},"action":"add","pubkey":"MY_PUBLIC_KEY"}}
+Received msg from node "my-unique-node-name": {"node":"my-unique-node-name","id":13228547606808916809,"result":"ok"}
 $ cargo run --bin config -- --config ./config.json send-signal pubkeys-set --action remove --filter accounts --kind account --name example --pubkey MY_PUBLIC_KEY
-Send message: {"target":"pubkeys_set","filter":{"accounts":{"name":"example","kind":"account"}},"action":"remove","pubkey":"MY_PUBLIC_KEY"}
+Send message: {"id":5831892823480507891,"method":"pubkeys_set","params":{"filter":{"accounts":{"name":"example","kind":"account"}},"action":"remove","pubkey":"MY_PUBLIC_KEY"}}
+Received msg from node "my-unique-node-name": {"node":"my-unique-node-name","id":5831892823480507891,"result":"ok"}
 ```

@@ -93,12 +93,15 @@ impl Filters {
         logs: bool,
         inner: Arc<Mutex<FiltersInner>>,
     ) {
-        if let Err(error) = admin.send_message(&ConfigMgmtMsg::Response {
-            node: node.clone(),
-            id: None,
-            result: Some("started".to_owned()),
-            error: None,
-        }).await {
+        if let Err(error) = admin
+            .send_message(&ConfigMgmtMsg::Response {
+                node: node.clone(),
+                id: None,
+                result: Some("started".to_owned()),
+                error: None,
+            })
+            .await
+        {
             error!("failed to send admin message: {:?}", error);
         }
 
