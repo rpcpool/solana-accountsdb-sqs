@@ -39,6 +39,7 @@ pub type PubkeyWithSourceResult = Result<(), PubkeyWithSourceError>;
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub libpath: String,
+    pub node: String,
     #[serde(default)]
     pub log: ConfigLog,
     pub prometheus: Option<ConfigPrometheus>,
