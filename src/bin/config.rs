@@ -183,6 +183,8 @@ pub enum ArgsActionSendSignal {
         #[clap(short, long)]
         pubkey: String,
     },
+    /// Watch for commands in Redis
+    Watch,
 }
 
 #[tokio::main]
@@ -379,6 +381,13 @@ async fn main() -> Result<()> {
                     )?,
                     pubkey: pubkey.parse::<Pubkey>()?,
                 },
+                ArgsActionSendSignal::Watch => {
+                    while let Some(msg) = admin.pubsub.next().await {
+                        println!("Received msg: {}", serde_json::to_string(&msg).unwrap());
+                    }
+                    println!("stream is finished");
+                    return Ok(());
+                }
             };
             let id: u64 = rand::random();
             let msg = ConfigMgmtMsg::Request { id, action };
