@@ -186,36 +186,54 @@ enum SendMessage {
 }
 
 impl SendMessage {
-    fn payload(&self, compression: &AccountsDataCompression) -> IoResult<String> {
-        Ok(match self {
-            SendMessage::Slot((status, slot)) => json!({
-                "type": "slot",
-                "status": status,
-                "slot": slot,
-            }),
-            SendMessage::Account((account, filters)) => json!({
-                "type": "account",
-                "filters": filters,
-                "pubkey": account.pubkey.to_string(),
-                "lamports": account.lamports,
-                "owner": account.owner.to_string(),
-                "executable": account.executable,
-                "rent_epoch": account.rent_epoch,
-                "data": base64::encode(compression.compress(&account.data)?.as_ref()),
-                "write_version": account.write_version,
-                "slot": account.slot,
-            }),
-            SendMessage::Transaction((transaction, filters)) => json!({
-                "type": "transaction",
-                "filters": filters,
-                "signature": transaction.signature.to_string(),
-                "transaction": base64::encode(&bincode::serialize(&transaction.transaction).unwrap()),
-                "meta": transaction.meta,
-                "slot": transaction.slot,
-                "block_time": transaction.block_time.unwrap_or_default(),
-            }),
-        }
-        .to_string())
+    fn payload(&self, compression: &AccountsDataCompression) -> IoResult<(String, String)> {
+        let mut md5 = Md5::new();
+        let value = match self {
+            SendMessage::Slot((status, slot)) => {
+                md5.update("slot");
+                md5.update(slot.to_le_bytes());
+                md5.update(status.as_str());
+                json!({
+                    "type": "slot",
+                    "status": status,
+                    "slot": slot,
+                })
+            }
+            SendMessage::Account((account, filters)) => {
+                md5.update("account");
+                md5.update(account.pubkey.as_ref());
+                md5.update(account.lamports.to_le_bytes());
+                md5.update(&account.data);
+                md5.update(account.slot.to_le_bytes());
+                json!({
+                    "type": "account",
+                    "filters": filters,
+                    "pubkey": account.pubkey.to_string(),
+                    "lamports": account.lamports,
+                    "owner": account.owner.to_string(),
+                    "executable": account.executable,
+                    "rent_epoch": account.rent_epoch,
+                    "data": base64::encode(compression.compress(&account.data)?.as_ref()),
+                    "write_version": account.write_version,
+                    "slot": account.slot,
+                })
+            }
+            SendMessage::Transaction((transaction, filters)) => {
+                md5.update("transaction");
+                md5.update(transaction.slot.to_le_bytes());
+                md5.update(transaction.signature.as_ref());
+                json!({
+                    "type": "transaction",
+                    "filters": filters,
+                    "signature": transaction.signature.to_string(),
+                    "transaction": base64::encode(&bincode::serialize(&transaction.transaction).unwrap()),
+                    "meta": transaction.meta,
+                    "slot": transaction.slot,
+                    "block_time": transaction.block_time.unwrap_or_default(),
+                })
+            }
+        };
+        Ok((value.to_string(), hex::encode(md5.finalize())))
     }
 
     fn payload_short(&self, s3: &str) -> String {
@@ -280,9 +298,9 @@ impl SendMessage {
 #[derive(Debug)]
 struct SendMessageWithPayload {
     message: SendMessage,
+    compression: &'static str,
     s3: bool,
     md5: String,
-    compression: &'static str,
     payload: String,
 }
 
@@ -295,11 +313,11 @@ impl SendMessageWithPayload {
     ) -> IoResult<Self> {
         message
             .payload(accounts_data_compression)
-            .map(|payload| Self {
+            .map(|(payload, md5)| Self {
                 message,
-                s3: payload.len() > SqsClient::REQUEST_LIMIT,
-                md5: hex::encode(Md5::digest(&payload)),
                 compression: accounts_data_compression.as_str(),
+                s3: payload.len() > SqsClient::REQUEST_LIMIT,
+                md5,
                 payload,
             })
     }
