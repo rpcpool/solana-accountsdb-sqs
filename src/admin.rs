@@ -5,7 +5,7 @@ use {
     redis::{AsyncCommands, RedisError},
     serde::{Deserialize, Serialize},
     solana_sdk::pubkey::Pubkey,
-    std::pin::Pin,
+    std::{fmt, pin::Pin},
     thiserror::Error,
 };
 
@@ -23,12 +23,17 @@ pub enum AdminError {
 
 pub type AdminResult<T = ()> = Result<T, AdminError>;
 
-#[derive(derivative::Derivative)]
-#[derivative(Debug)]
 pub struct ConfigMgmt {
     pub config: ConfigFiltersAdmin,
-    #[derivative(Debug = "ignore")]
     pub pubsub: Pin<Box<dyn Stream<Item = ConfigMgmtMsg> + Send + Sync>>,
+}
+
+impl fmt::Debug for ConfigMgmt {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.debug_struct("ConfigMgmt")
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ConfigMgmt {
