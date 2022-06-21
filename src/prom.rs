@@ -7,13 +7,18 @@ use {
         Body, Request, Response, Server, StatusCode,
     },
     log::*,
-    prometheus::{IntCounterVec, IntGauge, Opts, Registry, TextEncoder},
+    prometheus::{IntCounterVec, IntGauge, IntGaugeVec, Opts, Registry, TextEncoder},
     std::sync::Once,
     tokio::{runtime::Runtime, sync::oneshot},
 };
 
 lazy_static::lazy_static! {
     pub static ref REGISTRY: Registry = Registry::new();
+
+    pub static ref SLOTS_LAST_PROCESSED: IntGaugeVec = IntGaugeVec::new(
+        Opts::new("slots_last_processed", "Last processed slot by plugin in send loop"),
+        &["status"]
+    ).unwrap();
 
     pub static ref UPLOAD_MISSIED_INFO: IntGauge = IntGauge::new(
         "upload_missied_info",
@@ -99,6 +104,7 @@ impl PrometheusService {
                         .expect("collector can't be registered");
                 };
             }
+            register!(SLOTS_LAST_PROCESSED);
             register!(UPLOAD_MISSIED_INFO);
             register!(UPLOAD_QUEUE_SIZE);
             register!(UPLOAD_SQS_REQUESTS);

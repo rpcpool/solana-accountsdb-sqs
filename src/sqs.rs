@@ -4,7 +4,8 @@ use {
         config::{AccountsDataCompression, Config},
         filters::{Filters, FiltersError},
         prom::{
-            UploadMessagesStatus, UPLOAD_MESSAGES_TOTAL, UPLOAD_MISSIED_INFO, UPLOAD_QUEUE_SIZE,
+            UploadMessagesStatus, SLOTS_LAST_PROCESSED, UPLOAD_MESSAGES_TOTAL, UPLOAD_MISSIED_INFO,
+            UPLOAD_QUEUE_SIZE,
         },
     },
     arrayref::array_ref,
@@ -57,6 +58,16 @@ pub enum SlotStatus {
     Confirmed,
     #[derivative(Default)]
     Finalized,
+}
+
+impl SlotStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Processed => "processed",
+            Self::Confirmed => "confirmed",
+            Self::Finalized => "finalized",
+        }
+    }
 }
 
 impl From<GeyserSlotStatus> for SlotStatus {
@@ -735,6 +746,10 @@ impl AwsSqsClient {
                 _ = send_jobs_readiness => {},
                 message = rx.recv() => match message {
                     Some(Message::UpdateSlot((status, slot))) => {
+                        SLOTS_LAST_PROCESSED
+                            .with_label_values(&[status.as_str()])
+                            .set(slot as i64);
+
                         if filters.is_slot_messages_enabled().await {
                             add_message(&mut messages, SendMessage::Slot((status, slot)), &accounts_data_compression);
                         }
