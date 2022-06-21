@@ -620,7 +620,7 @@ impl TransactionsFilter {
                 logs.then(|| "added to")
             }
             ConfigMgmtMsgAction::Remove => {
-                if set.remove(&pubkey) {
+                if !set.remove(&pubkey) {
                     return Err(format!(
                         "pubkey {} in filter {}.{} not exists",
                         pubkey,
