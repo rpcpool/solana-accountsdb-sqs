@@ -2,11 +2,12 @@ use {
     crate::config::{ConfigFilters, ConfigFiltersAdmin, PubkeyWithSource, PubkeyWithSourceError},
     futures::stream::{Stream, StreamExt},
     log::*,
-    redis::{AsyncCommands, RedisError},
+    redis::{aio::Connection, AsyncCommands, RedisError},
     serde::{Deserialize, Serialize},
     solana_sdk::pubkey::Pubkey,
     std::{fmt, pin::Pin},
     thiserror::Error,
+    tokio::sync::Mutex,
 };
 
 #[derive(Debug, Error)]
@@ -25,6 +26,7 @@ pub type AdminResult<T = ()> = Result<T, AdminError>;
 
 pub struct ConfigMgmt {
     pub config: ConfigFiltersAdmin,
+    connection: Mutex<Connection>,
     pub pubsub: Pin<Box<dyn Stream<Item = ConfigMgmtMsg> + Send + Sync>>,
 }
 
@@ -38,11 +40,13 @@ impl fmt::Debug for ConfigMgmt {
 
 impl ConfigMgmt {
     pub async fn new(config: ConfigFiltersAdmin) -> AdminResult<Self> {
+        let connection = config.redis.get_async_connection().await?;
         let mut pubsub = config.redis.get_async_connection().await?.into_pubsub();
         pubsub.subscribe(&config.channel).await?;
 
         Ok(Self {
             config,
+            connection: Mutex::new(connection),
             pubsub: Box::pin(pubsub.into_on_message().filter_map(|msg| async move {
                 match serde_json::from_slice(msg.get_payload_bytes()) {
                     Ok(msg) => Some(msg),
@@ -81,7 +85,7 @@ impl ConfigMgmt {
     }
 
     pub async fn send_message(&self, message: &ConfigMgmtMsg) -> AdminResult {
-        let mut connection = self.config.redis.get_async_connection().await?;
+        let mut connection = self.connection.lock().await;
         connection
             .publish(&self.config.channel, serde_json::to_string(message)?)
             .await?;
