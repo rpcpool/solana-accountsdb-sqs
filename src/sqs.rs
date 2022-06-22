@@ -464,9 +464,9 @@ impl AwsSqsClient {
         let sqs_max_requests = config.sqs.max_requests;
         let commitment_level = config.messages.commitment_level;
         let accounts_data_compression = config.messages.accounts_data_compression;
-        let sqs = SqsClient::new(config.sqs, config.node)?;
+        let sqs = SqsClient::new(config.sqs, &config.node)?;
         let s3 = S3Client::new(config.s3)?;
-        let filters = Filters::new(config.filters, config.log.filters).await?;
+        let filters = Filters::new(config.filters, config.node, config.log.filters).await?;
 
         // Save required Tokenkeg Accounts
         let mut tokenkeg_owner_accounts: HashMap<Pubkey, ReplicaAccountInfo> = HashMap::new();
