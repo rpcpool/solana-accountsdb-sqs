@@ -9,6 +9,7 @@ use {
             ConfigMgmtMsgFilterAccounts, ConfigMgmtMsgFilterTransactions, ConfigMgmtMsgRequest,
         },
         config::{Config, ConfigAccountsFilter, ConfigTransactionsFilter, PubkeyWithSource},
+        version::VERSION,
     },
     solana_sdk::pubkey::Pubkey,
     std::{collections::HashSet, hash::Hash},
@@ -47,6 +48,8 @@ enum ArgsAction {
     SendSignal(ArgsActionSendSignal),
     /// Watch for commands in Redis
     Watch,
+    /// Print version info
+    Version,
 }
 
 #[derive(Debug, Subcommand)]
@@ -165,6 +168,8 @@ pub enum ArgsActionSet {
 pub enum ArgsActionSendSignal {
     /// Send ping
     Ping,
+    /// Ask plugin version info
+    Version,
     /// Reload whole config
     Global,
     /// Add or remove Public Key
@@ -347,6 +352,7 @@ async fn main() -> Result<()> {
         ArgsAction::SendSignal(signal) => {
             let action = match signal {
                 ArgsActionSendSignal::Ping => ConfigMgmtMsgRequest::Ping,
+                ArgsActionSendSignal::Version => ConfigMgmtMsgRequest::Version,
                 ArgsActionSendSignal::Global => ConfigMgmtMsgRequest::Global,
                 ArgsActionSendSignal::PubkeysSet {
                     filter,
@@ -412,7 +418,9 @@ async fn main() -> Result<()> {
                 println!("Received msg: {}", serde_json::to_string(&msg).unwrap());
             }
             println!("stream is finished");
-            return Ok(());
+        }
+        ArgsAction::Version => {
+            println!("{:#?}", VERSION);
         }
     }
 

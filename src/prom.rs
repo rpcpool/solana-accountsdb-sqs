@@ -1,5 +1,5 @@
 use {
-    crate::config::ConfigPrometheus,
+    crate::{config::ConfigPrometheus, version::VERSION as VERSION_INFO},
     futures::FutureExt,
     hyper::{
         server::conn::AddrStream,
@@ -14,6 +14,11 @@ use {
 
 lazy_static::lazy_static! {
     pub static ref REGISTRY: Registry = Registry::new();
+
+    static ref VERSION: IntCounterVec = IntCounterVec::new(
+        Opts::new("version", "Plugin version info"),
+        &["key", "value"]
+    ).unwrap();
 
     pub static ref SLOTS_LAST_PROCESSED: IntGaugeVec = IntGaugeVec::new(
         Opts::new("slots_last_processed", "Last processed slot by plugin in send loop"),
@@ -104,6 +109,7 @@ impl PrometheusService {
                         .expect("collector can't be registered");
                 };
             }
+            register!(VERSION);
             register!(SLOTS_LAST_PROCESSED);
             register!(UPLOAD_MISSIED_INFO);
             register!(UPLOAD_QUEUE_SIZE);
@@ -111,6 +117,16 @@ impl PrometheusService {
             register!(UPLOAD_SQS_TOTAL);
             register!(UPLOAD_S3_REQUESTS);
             register!(UPLOAD_S3_TOTAL);
+
+            for (key, value) in &[
+                ("version", VERSION_INFO.version),
+                ("solana", VERSION_INFO.solana),
+                ("git", VERSION_INFO.git),
+                ("rustc", VERSION_INFO.rustc),
+                ("buildts", VERSION_INFO.buildts),
+            ] {
+                VERSION.with_label_values(&[key, value]).inc()
+            }
         });
 
         let (tx, rx) = oneshot::channel();

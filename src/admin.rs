@@ -115,6 +115,7 @@ pub enum ConfigMgmtMsg {
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum ConfigMgmtMsgRequest {
     Ping,
+    Version,
     Global,
     PubkeysSet {
         filter: ConfigMgmtMsgFilter,
