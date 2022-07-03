@@ -120,6 +120,7 @@ impl PrometheusService {
 
             for (key, value) in &[
                 ("version", VERSION_INFO.version),
+                ("solana", VERSION_INFO.solana),
                 ("git", VERSION_INFO.git),
                 ("rustc", VERSION_INFO.rustc),
                 ("buildts", VERSION_INFO.buildts),
