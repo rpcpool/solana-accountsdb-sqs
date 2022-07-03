@@ -8,6 +8,7 @@ use {
             ConfigAccountsFilter, ConfigFilters, ConfigSlotsFilter, ConfigTransactionsFilter,
         },
         sqs::{ReplicaAccountInfo, ReplicaTransactionInfo},
+        version::VERSION,
     },
     futures::stream::StreamExt,
     log::*,
@@ -113,6 +114,16 @@ impl Filters {
                             node: node.clone(),
                             id: Some(id),
                             result: Some("pong".to_owned()),
+                            error: None
+                        }).await {
+                            error!("failed to send admin message: {:?}", error);
+                        }
+                    }
+                    Some(ConfigMgmtMsg::Request { id, action: ConfigMgmtMsgRequest::Version }) => {
+                        if let Err(error) = admin.send_message(&ConfigMgmtMsg::Response {
+                            node: node.clone(),
+                            id: Some(id),
+                            result: Some(serde_json::to_string(&VERSION).unwrap()),
                             error: None
                         }).await {
                             error!("failed to send admin message: {:?}", error);

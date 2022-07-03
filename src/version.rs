@@ -1,6 +1,6 @@
-use std::env;
+use {serde::Serialize, std::env};
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Version {
     pub version: &'static str,
     pub solana: &'static str,

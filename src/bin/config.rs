@@ -168,6 +168,8 @@ pub enum ArgsActionSet {
 pub enum ArgsActionSendSignal {
     /// Send ping
     Ping,
+    /// Ask plugin version info
+    Version,
     /// Reload whole config
     Global,
     /// Add or remove Public Key
@@ -350,6 +352,7 @@ async fn main() -> Result<()> {
         ArgsAction::SendSignal(signal) => {
             let action = match signal {
                 ArgsActionSendSignal::Ping => ConfigMgmtMsgRequest::Ping,
+                ArgsActionSendSignal::Version => ConfigMgmtMsgRequest::Version,
                 ArgsActionSendSignal::Global => ConfigMgmtMsgRequest::Global,
                 ArgsActionSendSignal::PubkeysSet {
                     filter,
