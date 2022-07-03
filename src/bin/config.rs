@@ -9,6 +9,7 @@ use {
             ConfigMgmtMsgFilterAccounts, ConfigMgmtMsgFilterTransactions, ConfigMgmtMsgRequest,
         },
         config::{Config, ConfigAccountsFilter, ConfigTransactionsFilter, PubkeyWithSource},
+        version::VERSION,
     },
     solana_sdk::pubkey::Pubkey,
     std::{collections::HashSet, hash::Hash},
@@ -47,6 +48,8 @@ enum ArgsAction {
     SendSignal(ArgsActionSendSignal),
     /// Watch for commands in Redis
     Watch,
+    /// Print version info
+    Version,
 }
 
 #[derive(Debug, Subcommand)]
@@ -412,7 +415,9 @@ async fn main() -> Result<()> {
                 println!("Received msg: {}", serde_json::to_string(&msg).unwrap());
             }
             println!("stream is finished");
-            return Ok(());
+        }
+        ArgsAction::Version => {
+            println!("{:#?}", VERSION);
         }
     }
 

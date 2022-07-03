@@ -5,3 +5,4 @@ pub mod filters;
 pub mod plugin;
 pub mod prom;
 pub mod sqs;
+pub mod version;
