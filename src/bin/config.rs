@@ -396,17 +396,22 @@ async fn main() -> Result<()> {
             let sleep = sleep_until(Instant::now() + Duration::from_secs(30));
             tokio::pin!(sleep);
 
+            let mut received = 0;
             loop {
                 tokio::select! {
                     _ = &mut sleep => {
-                        eprintln!("failed to get response");
+                        if received > 0 {
+                            println!("Total received: {}, exit.", received);
+                        } else {
+                            eprintln!("failed to get response");
+                        }
                         break
                     }
                     msg = admin.pubsub.next() => match msg {
                         Some(ConfigMgmtMsg::Response { node, id: rid, result, error }) if rid == Some(id) => {
                             let msg = ConfigMgmtMsg::Response{ node: node.clone(), id: rid, result, error };
                             println!("Received msg from node {:?}: {}", node, serde_json::to_string(&msg)?);
-                            break
+                            received += 1;
                         }
                         _ => {}
                     }
