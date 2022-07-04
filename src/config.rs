@@ -192,12 +192,10 @@ where
             "Only normal components are allowed, current: {:?}",
             component
         )))
+    } else if prefix.as_path().to_str().is_none() {
+        Err(de::Error::custom("Prefix is not valid UTF-8 string"))
     } else {
-        if prefix.as_path().to_str().is_none() {
-            Err(de::Error::custom("Prefix is not valid UTF-8 string"))
-        } else {
-            Ok(prefix)
-        }
+        Ok(prefix)
     }
 }
 
