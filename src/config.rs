@@ -18,7 +18,7 @@ use {
         hash::{Hash, Hasher},
         io::{Result as IoResult, Write},
         net::SocketAddr,
-        path::Path,
+        path::{Component, Path, PathBuf},
     },
     thiserror::Error,
 };
@@ -173,8 +173,32 @@ pub struct ConfigAwsS3 {
     #[serde(deserialize_with = "deserialize_region")]
     pub region: Region,
     pub bucket: String,
+    #[serde(deserialize_with = "deserialize_bucket_prefix")]
+    pub prefix: PathBuf,
     #[serde(deserialize_with = "deserialize_max_requests")]
     pub max_requests: usize,
+}
+
+fn deserialize_bucket_prefix<'de, D>(deserializer: D) -> Result<PathBuf, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let prefix = PathBuf::from(String::deserialize(deserializer)?);
+    if let Some(component) = prefix
+        .components()
+        .find(|c| !matches!(c, Component::Normal(_)))
+    {
+        Err(de::Error::custom(format!(
+            "Only normal components are allowed, current: {:?}",
+            component
+        )))
+    } else {
+        if prefix.as_path().to_str().is_none() {
+            Err(de::Error::custom("Prefix is not valid UTF-8 string"))
+        } else {
+            Ok(prefix)
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]

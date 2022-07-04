@@ -27,6 +27,7 @@
         },
         "region": "us-east-2",
         "bucket": "solana-geyser",
+        "prefix": "bucket_folder",
         "max_requests": "10_000"
     },
     "messages": {

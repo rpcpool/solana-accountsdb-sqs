@@ -22,7 +22,12 @@ use {
         SqsClient as RusotoSqsClient,
     },
     serde::de::{self, Deserialize, Deserializer},
-    std::{collections::HashMap, sync::Arc, time::Duration},
+    std::{
+        collections::HashMap,
+        path::{Path, PathBuf},
+        sync::Arc,
+        time::Duration,
+    },
     thiserror::Error,
     tokio::{sync::Semaphore, time::sleep},
 };
@@ -35,6 +40,8 @@ pub enum AwsError {
     HttpClientTls(#[from] TlsError),
     #[error("failed to get sqs queue attributes: {0}")]
     SqsGetAttributes(#[from] RusotoError<GetQueueAttributesError>),
+    #[error("S3 key is not valid UTF-8 string")]
+    S3Path,
     #[error("failed to upload payload to s3: {0}")]
     S3PutObject(#[from] RusotoError<PutObjectError>),
 }
@@ -184,6 +191,7 @@ pub struct S3Client {
     #[derivative(Debug = "ignore")]
     pub client: RusotoS3Client,
     pub bucket: String,
+    pub prefix: PathBuf,
     pub permits: Arc<Semaphore>,
 }
 
@@ -193,6 +201,7 @@ impl S3Client {
         Ok(Self {
             client: RusotoS3Client::new_with_client(client, config.region),
             bucket: config.bucket,
+            prefix: config.prefix,
             permits: Arc::new(Semaphore::new(config.max_requests)),
         })
     }
@@ -206,16 +215,23 @@ impl S3Client {
 
     pub async fn put_object<K, B>(self, key: K, body: B) -> AwsResult
     where
-        K: Into<String> + Clone + Send,
+        K: AsRef<Path> + Send,
         B: Into<ByteStream> + Clone + Send,
     {
+        let mut prefix = self.prefix.clone();
+        prefix.push(key);
+        let key = match prefix.as_path().to_str() {
+            Some(key) => key.to_string(),
+            None => return Err(AwsError::S3Path),
+        };
+
         let permit = self.permits.acquire().await.expect("alive");
         UPLOAD_S3_REQUESTS.inc();
         let result = with_retries("s3", ExponentialBackoff::default(), || {
             let input = PutObjectRequest {
                 body: Some(body.clone().into()),
                 bucket: self.bucket.clone(),
-                key: key.clone().into(),
+                key: key.clone(),
                 ..Default::default()
             };
             let client = self.client.clone();
