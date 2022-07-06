@@ -4,6 +4,7 @@ use {
         config::{AccountsDataCompression, Config},
         filters::{Filters, FiltersError},
         prom::{
+            health::{set_heath, HealthInfoType},
             UploadMessagesStatus, SLOTS_LAST_PROCESSED, UPLOAD_MESSAGES_TOTAL, UPLOAD_MISSIED_INFO,
             UPLOAD_QUEUE_SIZE,
         },
@@ -376,9 +377,11 @@ impl AwsSqsClient {
 
         let (send_queue, rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
+            set_heath(HealthInfoType::SendLoop, Ok(()));
             if let Err(error) = Self::send_loop(config, rx, startup_job_loop, send_job_loop).await {
                 error!("update_loop failed: {:?}", error);
             }
+            set_heath(HealthInfoType::SendLoop, Err(()));
         });
 
         Ok(Self {
