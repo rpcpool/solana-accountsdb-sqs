@@ -97,6 +97,7 @@ impl ConfigMgmt {
 #[serde(untagged, rename_all = "snake_case")]
 pub enum ConfigMgmtMsg {
     Request {
+        node: Option<String>,
         id: u64,
         #[serde(flatten)]
         action: ConfigMgmtMsgRequest,
