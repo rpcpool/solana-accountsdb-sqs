@@ -20,6 +20,11 @@ lazy_static::lazy_static! {
         &["key", "value"]
     ).unwrap();
 
+    static ref HEALTH_INFO: IntGaugeVec = IntGaugeVec::new(
+        Opts::new("health_info", "Plugin health info, 0 is err, 1 is ok"),
+        &["type"]
+    ).unwrap();
+
     pub static ref SLOTS_LAST_PROCESSED: IntGaugeVec = IntGaugeVec::new(
         Opts::new("slots_last_processed", "Last processed slot by plugin in send loop"),
         &["status"]
@@ -61,6 +66,30 @@ lazy_static::lazy_static! {
     ).unwrap();
 }
 
+pub mod health {
+    use super::HEALTH_INFO;
+
+    #[derive(Debug, Clone, Copy)]
+    pub enum HealthInfoType {
+        SendLoop,
+        RedisAdmin,
+    }
+
+    impl HealthInfoType {
+        pub fn as_str(self) -> &'static str {
+            match self {
+                Self::SendLoop => "send_loop",
+                Self::RedisAdmin => "redis_admin",
+            }
+        }
+    }
+
+    pub fn set_heath(r#type: HealthInfoType, status: Result<(), ()>) {
+        let value = if status.is_ok() { 1 } else { 0 };
+        HEALTH_INFO.with_label_values(&[r#type.as_str()]).set(value);
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum UploadMessagesStatus {
     Success,
@@ -69,11 +98,11 @@ pub enum UploadMessagesStatus {
 }
 
 impl UploadMessagesStatus {
-    pub fn as_str(&self) -> &str {
-        match *self {
-            UploadMessagesStatus::Success => "success",
-            UploadMessagesStatus::Failed => "failed",
-            UploadMessagesStatus::Dropped => "dropped",
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Failed => "failed",
+            Self::Dropped => "dropped",
         }
     }
 }
@@ -85,10 +114,10 @@ pub enum UploadAwsStatus {
 }
 
 impl UploadAwsStatus {
-    pub fn as_str(&self) -> &str {
-        match *self {
-            UploadAwsStatus::Success => "success",
-            UploadAwsStatus::Failed => "failed",
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Failed => "failed",
         }
     }
 }
@@ -110,6 +139,7 @@ impl PrometheusService {
                 };
             }
             register!(VERSION);
+            register!(HEALTH_INFO);
             register!(SLOTS_LAST_PROCESSED);
             register!(UPLOAD_MISSIED_INFO);
             register!(UPLOAD_QUEUE_SIZE);

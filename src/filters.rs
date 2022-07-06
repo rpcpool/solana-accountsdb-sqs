@@ -7,6 +7,7 @@ use {
         config::{
             ConfigAccountsFilter, ConfigFilters, ConfigSlotsFilter, ConfigTransactionsFilter,
         },
+        prom::health::{set_heath, HealthInfoType},
         sqs::{ReplicaAccountInfo, ReplicaTransactionInfo},
         version::VERSION,
     },
@@ -106,6 +107,7 @@ impl Filters {
             error!("failed to send admin message: {:?}", error);
         }
 
+        set_heath(HealthInfoType::RedisAdmin, Ok(()));
         loop {
             tokio::select! {
                 msg = admin.pubsub.next() => match msg {
@@ -206,6 +208,7 @@ impl Filters {
                 }
             }
         }
+        set_heath(HealthInfoType::RedisAdmin, Err(()));
     }
 
     pub fn shutdown(self) {
