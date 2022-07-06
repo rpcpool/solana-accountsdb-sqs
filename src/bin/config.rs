@@ -44,8 +44,14 @@ enum ArgsAction {
     #[clap(subcommand)]
     Set(ArgsActionSet),
     /// Send update signal
-    #[clap(subcommand)]
-    SendSignal(ArgsActionSendSignal),
+    SendSignal {
+        /// Node which will handle signal, or `None` for all nodes
+        #[clap(short, long)]
+        node: Option<String>,
+        /// Signal kind
+        #[clap(subcommand)]
+        signal: ArgsActionSendSignal,
+    },
     /// Watch for commands in Redis
     Watch,
     /// Print version info
@@ -349,7 +355,7 @@ async fn main() -> Result<()> {
                 connection.srem(&name, pubkey).await?;
             }
         },
-        ArgsAction::SendSignal(signal) => {
+        ArgsAction::SendSignal { node, signal } => {
             let action = match signal {
                 ArgsActionSendSignal::Ping => ConfigMgmtMsgRequest::Ping,
                 ArgsActionSendSignal::Version => ConfigMgmtMsgRequest::Version,
@@ -389,7 +395,7 @@ async fn main() -> Result<()> {
                 },
             };
             let id: u64 = rand::random();
-            let msg = ConfigMgmtMsg::Request { id, action };
+            let msg = ConfigMgmtMsg::Request { node, id, action };
             println!("Send message: {}", serde_json::to_string(&msg)?);
             admin.send_message(&msg).await?;
 

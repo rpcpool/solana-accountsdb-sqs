@@ -91,13 +91,13 @@ impl Filters {
     async fn update_loop(
         mut admin: ConfigMgmt,
         mut shutdown: oneshot::Receiver<()>,
-        node: String,
+        this_node: String,
         logs: bool,
         inner: Arc<Mutex<FiltersInner>>,
     ) {
         if let Err(error) = admin
             .send_message(&ConfigMgmtMsg::Response {
-                node: node.clone(),
+                node: this_node.clone(),
                 id: None,
                 result: Some("started".to_owned()),
                 error: None,
@@ -111,9 +111,9 @@ impl Filters {
         loop {
             tokio::select! {
                 msg = admin.pubsub.next() => match msg {
-                    Some(ConfigMgmtMsg::Request { id, action: ConfigMgmtMsgRequest::Ping }) => {
+                    Some(ConfigMgmtMsg::Request { node, id, action: ConfigMgmtMsgRequest::Ping }) => if node.is_none() || node.as_deref() == Some(this_node.as_str()) {
                         if let Err(error) = admin.send_message(&ConfigMgmtMsg::Response {
-                            node: node.clone(),
+                            node: this_node.clone(),
                             id: Some(id),
                             result: Some("pong".to_owned()),
                             error: None
@@ -121,9 +121,9 @@ impl Filters {
                             error!("failed to send admin message: {:?}", error);
                         }
                     }
-                    Some(ConfigMgmtMsg::Request { id, action: ConfigMgmtMsgRequest::Version }) => {
+                    Some(ConfigMgmtMsg::Request { node, id, action: ConfigMgmtMsgRequest::Version }) => if node.is_none() || node.as_deref() == Some(this_node.as_str()) {
                         if let Err(error) = admin.send_message(&ConfigMgmtMsg::Response {
-                            node: node.clone(),
+                            node: this_node.clone(),
                             id: Some(id),
                             result: Some(serde_json::to_string(&VERSION).unwrap()),
                             error: None
@@ -131,7 +131,7 @@ impl Filters {
                             error!("failed to send admin message: {:?}", error);
                         }
                     }
-                    Some(ConfigMgmtMsg::Request { id, action: ConfigMgmtMsgRequest::Global }) => {
+                    Some(ConfigMgmtMsg::Request { node, id, action: ConfigMgmtMsgRequest::Global }) => if node.is_none() || node.as_deref() == Some(this_node.as_str()) {
                        let updated = match admin.get_global_config().await {
                             Ok(config) => {
                                 let new_inner = FiltersInner::new(config);
@@ -158,7 +158,7 @@ impl Filters {
                         };
 
                         if let Err(error) = admin.send_message(&ConfigMgmtMsg::Response {
-                            node: node.clone(),
+                            node: this_node.clone(),
                             id: Some(id),
                             result,
                             error,
@@ -166,7 +166,7 @@ impl Filters {
                             error!("failed to send admin message: {:?}", error);
                         }
                     }
-                    Some(ConfigMgmtMsg::Request { id, action: ConfigMgmtMsgRequest::PubkeysSet { filter, action, pubkey } }) => {
+                    Some(ConfigMgmtMsg::Request { node, id, action: ConfigMgmtMsgRequest::PubkeysSet { filter, action, pubkey } }) => if node.is_none() || node.as_deref() == Some(this_node.as_str()) {
                         let mut locked = inner.lock().await;
                         let updated = match filter {
                             ConfigMgmtMsgFilter::Accounts { name, kind } => {
@@ -189,7 +189,7 @@ impl Filters {
                         };
 
                         if let Err(error) = admin.send_message(&ConfigMgmtMsg::Response {
-                            node: node.clone(),
+                            node: this_node.clone(),
                             id: Some(id),
                             result,
                             error,
