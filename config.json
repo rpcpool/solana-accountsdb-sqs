@@ -14,7 +14,11 @@
           "secret_access_key": "secret_access_key"
         },
         "region": "us-east-2",
-        "url": "https://sqs.us-east-2.amazonaws.com/<account_id>/<accounts_queue>",
+        "url": {
+            "slots": "https://sqs.us-east-2.amazonaws.com/<account_id>/<accounts_queue>",
+            "accounts": "https://sqs.us-east-2.amazonaws.com/<account_id>/<accounts_queue>",
+            "transactions": "https://sqs.us-east-2.amazonaws.com/<account_id>/<accounts_queue>"
+        },
         "max_requests": "10_000",
         "attributes": {
             "my-custom-attribute": "value of the attribute"

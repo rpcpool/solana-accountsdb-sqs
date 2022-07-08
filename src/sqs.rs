@@ -178,6 +178,13 @@ enum Message {
     Shutdown,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum SendMessageType {
+    Slot,
+    Account,
+    Transaction,
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 enum SendMessage {
@@ -187,6 +194,14 @@ enum SendMessage {
 }
 
 impl SendMessage {
+    fn get_type(&self) -> SendMessageType {
+        match self {
+            Self::Slot(_) => SendMessageType::Slot,
+            Self::Account(_) => SendMessageType::Account,
+            Self::Transaction(_) => SendMessageType::Transaction,
+        }
+    }
+
     fn payload(&self, compression: &AccountsDataCompression) -> IoResult<(String, String)> {
         let mut md5 = Md5::new();
         let value = match self {
@@ -732,12 +747,19 @@ impl AwsSqsClient {
 
         loop {
             if !messages.is_empty() && send_jobs.available_permits() > 0 {
+                let mut messages_type = None;
                 let mut messages_batch_size = 0;
                 let mut messages_batch = Vec::with_capacity(10);
                 while messages_batch.len() < 10 {
                     if let Some(message) = messages.pop_front() {
                         if messages_batch_size + message.payload_size() <= SqsClient::REQUEST_LIMIT
+                            && (!sqs.is_typed()
+                                || messages_type.is_none()
+                                || messages_type == Some(message.message.get_type()))
                         {
+                            if sqs.is_typed() {
+                                messages_type = Some(message.message.get_type());
+                            }
                             messages_batch_size += message.payload_size();
                             messages_batch.push(message);
                         } else {
@@ -748,15 +770,17 @@ impl AwsSqsClient {
                         break;
                     }
                 }
-                UPLOAD_QUEUE_SIZE.sub(messages_batch.len() as i64);
-                let sqs = sqs.clone();
-                let s3 = s3.clone();
-                let send_jobs = Arc::clone(&send_jobs);
-                let send_permit = send_jobs.try_acquire_owned().expect("available permit");
-                tokio::spawn(async move {
-                    Self::send_messages(sqs, s3, messages_batch).await;
-                    drop(send_permit);
-                });
+                if !messages_batch.is_empty() {
+                    UPLOAD_QUEUE_SIZE.sub(messages_batch.len() as i64);
+                    let sqs = sqs.clone();
+                    let s3 = s3.clone();
+                    let send_jobs = Arc::clone(&send_jobs);
+                    let send_permit = send_jobs.try_acquire_owned().expect("available permit");
+                    tokio::spawn(async move {
+                        Self::send_messages(sqs, s3, messages_batch, messages_type).await;
+                        drop(send_permit);
+                    });
+                }
                 continue;
             }
 
@@ -837,7 +861,12 @@ impl AwsSqsClient {
         Ok(())
     }
 
-    async fn send_messages(sqs: SqsClient, s3: S3Client, messages: Vec<SendMessageWithPayload>) {
+    async fn send_messages(
+        sqs: SqsClient,
+        s3: S3Client,
+        messages: Vec<SendMessageWithPayload>,
+        messages_type: Option<SendMessageType>,
+    ) {
         let mut success_count = 0;
         let mut failed_count = 0;
 
@@ -888,7 +917,7 @@ impl AwsSqsClient {
                 .await;
         failed_count += messages_initial_count - messages.len();
 
-        let failed = sqs.send_batch(entries).await;
+        let failed = sqs.send_batch(entries, messages_type).await;
         success_count += messages.len() - failed.len();
         failed_count += failed.len();
         for entry in failed {
