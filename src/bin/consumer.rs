@@ -10,7 +10,7 @@ use {
     },
     serde::Deserialize,
     solana_geyser_sqs::{
-        aws::{S3Client, SqsClient, SqsMessageAttributes},
+        aws::{S3Client, SqsClient, SqsClientQueueUrl, SqsMessageAttributes},
         config::{AccountsDataCompression, Config},
     },
     std::{
@@ -99,7 +99,7 @@ async fn send_loop(config: Config) -> anyhow::Result<()> {
                     message_attributes: Some(attributes.into_inner()),
                     ..Default::default()
                 }],
-                queue_url: sqs.queue_url.clone(),
+                queue_url: get_shared(&sqs)?,
             })
             .await;
         println!("Send sqs message: {:?}", result);
@@ -119,7 +119,7 @@ async fn receive_loop(args: Args, config: Config) -> anyhow::Result<()> {
             .receive_message(ReceiveMessageRequest {
                 max_number_of_messages: Some(args.max_messages),
                 message_attribute_names: Some(vec!["All".to_owned()]),
-                queue_url: sqs.queue_url.clone(),
+                queue_url: get_shared(&sqs)?,
                 ..Default::default()
             })
             .await;
@@ -219,7 +219,7 @@ async fn receive_loop(args: Args, config: Config) -> anyhow::Result<()> {
                         .client
                         .delete_message_batch(DeleteMessageBatchRequest {
                             entries,
-                            queue_url: sqs.queue_url.clone(),
+                            queue_url: get_shared(&sqs)?,
                         })
                         .await;
                 }
@@ -227,5 +227,12 @@ async fn receive_loop(args: Args, config: Config) -> anyhow::Result<()> {
             Ok(ReceiveMessageResult { messages: None }) => sleep(Duration::from_millis(500)).await,
             Err(error) => println!("{} | error: {:?}", now, error),
         };
+    }
+}
+
+fn get_shared(sqs: &SqsClient) -> anyhow::Result<String> {
+    match &sqs.queue_url {
+        SqsClientQueueUrl::Shared(url) => Ok(url.clone()),
+        SqsClientQueueUrl::Typed { .. } => Err(anyhow::anyhow!("not shared url is not supported")),
     }
 }

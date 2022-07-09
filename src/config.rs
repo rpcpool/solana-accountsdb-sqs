@@ -1,5 +1,8 @@
 use {
-    crate::{aws::SqsMessageAttributes, sqs::SlotStatus},
+    crate::{
+        aws::{SqsClientQueueUrl, SqsMessageAttributes},
+        sqs::SlotStatus,
+    },
     flate2::{write::GzEncoder, Compression as GzCompression},
     redis::{
         aio::Connection as RedisConnection, AsyncCommands, Client as RedisClient,
@@ -101,7 +104,7 @@ pub struct ConfigAwsSqs {
     pub auth: ConfigAwsAuth,
     #[serde(deserialize_with = "deserialize_region")]
     pub region: Region,
-    pub url: String,
+    pub url: SqsClientQueueUrl,
     #[serde(deserialize_with = "deserialize_max_requests")]
     pub max_requests: usize,
     #[serde(default)]

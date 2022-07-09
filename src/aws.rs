@@ -5,8 +5,9 @@ use {
             UploadAwsStatus, UPLOAD_S3_REQUESTS, UPLOAD_S3_TOTAL, UPLOAD_SQS_REQUESTS,
             UPLOAD_SQS_TOTAL,
         },
+        sqs::SendMessageType,
     },
-    futures::future::BoxFuture,
+    futures::future::{try_join_all, BoxFuture},
     hyper::Client,
     hyper_tls::HttpsConnector,
     log::*,
@@ -102,12 +103,56 @@ impl<'de> Deserialize<'de> for SqsMessageAttributes {
     }
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum SqsClientQueueUrl {
+    Shared(String),
+    Typed {
+        slots: String,
+        accounts: String,
+        transactions: String,
+    },
+}
+
+impl SqsClientQueueUrl {
+    pub fn optimize(self) -> Self {
+        match self {
+            Self::Shared(url) => Self::Shared(url),
+            Self::Typed {
+                slots,
+                accounts,
+                transactions,
+            } if slots == accounts && accounts == transactions => Self::Shared(slots),
+            Self::Typed {
+                slots,
+                accounts,
+                transactions,
+            } => Self::Typed {
+                slots,
+                accounts,
+                transactions,
+            },
+        }
+    }
+
+    pub fn get_urls(self) -> Vec<String> {
+        match self {
+            Self::Shared(url) => vec![url],
+            Self::Typed {
+                slots,
+                accounts,
+                transactions,
+            } => vec![slots, accounts, transactions],
+        }
+    }
+}
+
 #[derive(derivative::Derivative)]
 #[derivative(Debug, Clone)]
 pub struct SqsClient {
     #[derivative(Debug = "ignore")]
     pub client: RusotoSqsClient,
-    pub queue_url: String,
+    pub queue_url: SqsClientQueueUrl,
     attributes: SqsMessageAttributes,
 }
 
@@ -121,23 +166,41 @@ impl SqsClient {
         config.attributes.insert("node", node.into());
         Ok(Self {
             client: RusotoSqsClient::new_with_client(client, config.region),
-            queue_url: config.url,
+            queue_url: config.url.optimize(),
             attributes: config.attributes,
         })
     }
 
     pub async fn check(self) -> AwsResult {
-        UPLOAD_SQS_REQUESTS.inc();
-        let result = self
-            .client
-            .get_queue_attributes(GetQueueAttributesRequest {
-                attribute_names: None,
-                queue_url: self.queue_url,
-            })
-            .await;
-        UPLOAD_SQS_REQUESTS.dec();
+        let client = self.client.clone();
+        try_join_all(
+            self.queue_url
+                .get_urls()
+                .into_iter()
+                .map(|queue_url| {
+                    let client = client.clone();
+                    async move {
+                        UPLOAD_SQS_REQUESTS.inc();
+                        let result = client
+                            .get_queue_attributes(GetQueueAttributesRequest {
+                                attribute_names: None,
+                                queue_url,
+                            })
+                            .await;
+                        UPLOAD_SQS_REQUESTS.dec();
 
-        result.map_err(Into::into).map(|_| ())
+                        result
+                    }
+                })
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .map_err(AwsError::SqsGetAttributes)
+        .map(|_| ())
+    }
+
+    pub fn is_typed(&self) -> bool {
+        matches!(self.queue_url, SqsClientQueueUrl::Typed { .. })
     }
 
     pub fn get_attributes(&self) -> SqsMessageAttributes {
@@ -147,18 +210,46 @@ impl SqsClient {
     pub async fn send_batch(
         self,
         entries: Vec<SendMessageBatchRequestEntry>,
+        messages_type: Option<SendMessageType>,
     ) -> Vec<BatchResultErrorEntry> {
-        UPLOAD_SQS_REQUESTS.inc();
-        let result = with_retries("sqs", ExponentialBackoff::default(), || {
-            let input = SendMessageBatchRequest {
-                entries: entries.clone(),
-                queue_url: self.queue_url.clone(),
-            };
-            let client = self.client.clone();
-            Box::pin(async move { client.send_message_batch(input).await })
-        })
-        .await;
-        UPLOAD_SQS_REQUESTS.dec();
+        let Self {
+            client, queue_url, ..
+        } = self;
+
+        let queue_url = match (queue_url, messages_type) {
+            (SqsClientQueueUrl::Shared(url), _) => Some(url),
+            (
+                SqsClientQueueUrl::Typed {
+                    slots,
+                    accounts,
+                    transactions,
+                },
+                Some(messages_type),
+            ) => Some(match messages_type {
+                SendMessageType::Slot => slots,
+                SendMessageType::Account => accounts,
+                SendMessageType::Transaction => transactions,
+            }),
+            (SqsClientQueueUrl::Typed { .. }, None) => None,
+        };
+
+        let result = match queue_url {
+            Some(queue_url) => {
+                UPLOAD_SQS_REQUESTS.inc();
+                let result = with_retries("sqs", ExponentialBackoff::default(), || {
+                    let input = SendMessageBatchRequest {
+                        entries: entries.clone(),
+                        queue_url: queue_url.clone(),
+                    };
+                    let client = client.clone();
+                    Box::pin(async move { client.send_message_batch(input).await })
+                })
+                .await;
+                UPLOAD_SQS_REQUESTS.dec();
+                result.map_err(|_error| ())
+            }
+            None => Err(()),
+        };
 
         let failed = match result {
             Ok(rusoto_sqs::SendMessageBatchResult { successful, failed }) => {
