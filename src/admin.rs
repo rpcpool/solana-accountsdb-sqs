@@ -74,12 +74,12 @@ impl ConfigMgmt {
         Ok(())
     }
 
-    pub async fn send_message(&self, message: &ConfigMgmtMsg) -> AdminResult {
+    pub async fn send_message(&self, message: &ConfigMgmtMsg) -> AdminResult<usize> {
         let mut connection = self.connection.lock().await;
         connection
             .publish(&self.config.channel, serde_json::to_string(message)?)
-            .await?;
-        Ok(())
+            .await
+            .map_err(Into::into)
     }
 }
 
