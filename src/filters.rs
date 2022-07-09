@@ -5,7 +5,8 @@ use {
             ConfigMgmtMsgFilterAccounts, ConfigMgmtMsgFilterTransactions, ConfigMgmtMsgRequest,
         },
         config::{
-            ConfigAccountsFilter, ConfigFilters, ConfigSlotsFilter, ConfigTransactionsFilter,
+            ConfigAccountsFilter, ConfigFilters, ConfigRedis, ConfigSlotsFilter,
+            ConfigTransactionsFilter,
         },
         prom::health::{set_heath, HealthInfoType},
         sqs::{ReplicaAccountInfo, ReplicaTransactionInfo},
@@ -56,8 +57,13 @@ pub struct Filters {
 }
 
 impl Filters {
-    pub async fn new(mut config: ConfigFilters, node: String, logs: bool) -> FiltersResult<Self> {
-        let admin = match config.admin {
+    pub async fn new(
+        mut config: ConfigFilters,
+        redis: Option<ConfigRedis>,
+        node: String,
+        logs: bool,
+    ) -> FiltersResult<Self> {
+        let admin = match redis {
             Some(admin_config) => {
                 let admin = ConfigMgmt::new(admin_config).await?;
                 config = admin.get_global_config().await?;

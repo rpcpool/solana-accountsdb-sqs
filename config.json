@@ -30,16 +30,16 @@
         "prefix": "bucket_folder",
         "max_requests": "10_000"
     },
+    "redis": {
+        "url": "redis://127.0.0.1:6379/",
+        "channel": "admin",
+        "config": "config"
+    },
     "messages": {
         "commitment_level": "confirmed",
         "accounts_data_compression": {"algo": "none"}
     },
     "filters": {
-        "admin": {
-            "redis": "redis://127.0.0.1:6379/",
-            "channel": "admin",
-            "config": "config"
-        },
         "slots": {
             "enabled": false
         },

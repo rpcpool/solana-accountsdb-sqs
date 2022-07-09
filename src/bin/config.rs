@@ -203,14 +203,13 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let config = Config::load_from_file(&args.config)?;
-    let config_admin = config.filters.admin.clone().expect("defined admin config");
+    let config_admin = config.redis.clone().expect("defined redis config");
     let mut admin = ConfigMgmt::new(config_admin.clone()).await?;
 
     match args.action {
         ArgsAction::Init => {
             let mut config = config.filters.clone();
-            config.admin = None;
-            let mut connection = config_admin.redis.get_async_connection().await?;
+            let mut connection = config_admin.url.get_async_connection().await?;
             config.load_pubkeys(&mut connection).await?;
             admin.set_global_config(&config).await?;
             println!("Config uploaded");
@@ -346,12 +345,12 @@ async fn main() -> Result<()> {
         ArgsAction::Set(action) => match action {
             ArgsActionSet::Add { name, pubkey } => {
                 pubkey.parse::<Pubkey>()?;
-                let mut connection = admin.config.redis.get_async_connection().await?;
+                let mut connection = admin.config.url.get_async_connection().await?;
                 connection.sadd(&name, pubkey).await?;
             }
             ArgsActionSet::Remove { name, pubkey } => {
                 pubkey.parse::<Pubkey>()?;
-                let mut connection = admin.config.redis.get_async_connection().await?;
+                let mut connection = admin.config.url.get_async_connection().await?;
                 connection.srem(&name, pubkey).await?;
             }
         },
