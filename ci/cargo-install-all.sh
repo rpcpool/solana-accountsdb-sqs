@@ -65,13 +65,16 @@ cd "$(dirname "$0")"/..
 SECONDS=0
 
 mkdir -p "$installDir/lib"
+mkdir -p "$installDir/bin"
 
 (
   set -x
   # shellcheck disable=SC2086 # Don't want to double quote $rust_version
-  cargo $maybeRustVersion build $maybeReleaseFlag --lib
+  cargo $maybeRustVersion build $maybeReleaseFlag --lib --bins
 )
 
+cp -fv "target/$buildVariant/config" "$installDir"/bin/
+cp -fv "target/$buildVariant/consumer" "$installDir"/bin/
 cp -fv "target/$buildVariant/${GEYSER_PLUGIN_LIB}.$libExt" "$installDir"/lib/
 
 echo "Done after $SECONDS seconds"
