@@ -204,7 +204,7 @@ async fn main() -> Result<()> {
 
     let config = Config::load_from_file(&args.config)?;
     let config_admin = config.redis.clone().expect("defined redis config");
-    let mut admin = ConfigMgmt::new(config_admin.clone()).await?;
+    let mut admin = ConfigMgmt::new(config_admin.clone(), config.node.clone()).await?;
 
     match args.action {
         ArgsAction::Init => {
