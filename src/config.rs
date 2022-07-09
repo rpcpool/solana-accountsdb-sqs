@@ -45,6 +45,7 @@ pub struct Config {
     pub prometheus: Option<ConfigPrometheus>,
     pub sqs: ConfigAwsSqs,
     pub s3: ConfigAwsS3,
+    pub redis: Option<ConfigRedis>,
     pub messages: ConfigMessages,
     pub filters: ConfigFilters,
 }
@@ -267,7 +268,6 @@ impl AccountsDataCompression {
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ConfigFilters {
-    pub admin: Option<ConfigFiltersAdmin>,
     pub slots: ConfigSlotsFilter,
     pub accounts: HashMap<String, ConfigAccountsFilter>,
     pub transactions: HashMap<String, ConfigTransactionsFilter>,
@@ -334,9 +334,9 @@ impl ConfigFilters {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct ConfigFiltersAdmin {
+pub struct ConfigRedis {
     #[serde(deserialize_with = "deserialize_redis_client", skip_serializing)]
-    pub redis: RedisClient,
+    pub url: RedisClient,
     pub channel: String,
     pub config: String,
 }

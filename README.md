@@ -260,15 +260,13 @@ With these config plugin will expect Public Keys in `filter-by-account-keys`.
 
 ### Admin channel
 
-Plugin support communication through redis, for activate it you need to add `admin` object to the `filters`:
+Plugin support communication through redis, for activate it you need to add `redis` object:
 
 ```json
-"filters": {
-    "admin": {
-        "redis": "redis://127.0.0.1:6379/",
-        "channel": "admin",
-        "config": "config"
-    }
+"redis": {
+    "url": "redis://127.0.0.1:6379/",
+    "channel": "admin",
+    "config": "config"
 }
 ```
 
@@ -298,7 +296,7 @@ It's also possible to reload filters without re-starting solana-validator.
 
 You can check CLI-tool for this: `cargo run --bin config -- --help`.
 
-Plugin will load config from Redis on startup, `config` key in current example, `slots`/`accounts`/`transactions` in json file will be overwritten. Config format in Redis is same as in `json` file except that `admin` section should not exists.
+Plugin will load config from Redis on startup, `config` key in current example, `slots`/`accounts`/`transactions` in json file will be overwritten. Config format in Redis is same as in `json` file.
 
 Each time when config need to be reloaded these data should be published to the channel (`admin` in current example): `{"id":0,"method":"global"}`. As response you will get: `{"node":"my-unique-node-name","id":0,"result":"ok"}`.
 
