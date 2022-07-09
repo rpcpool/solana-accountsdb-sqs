@@ -396,7 +396,11 @@ async fn main() -> Result<()> {
             let id: u64 = rand::random();
             let msg = ConfigMgmtMsg::Request { node, id, action };
             println!("Send message: {}", serde_json::to_string(&msg)?);
-            admin.send_message(&msg).await?;
+            let receivers = admin.send_message(&msg).await?;
+            println!(
+                "{} subscribers received the message (1 of it, this tool itself)",
+                receivers
+            );
 
             let sleep = sleep_until(Instant::now() + Duration::from_secs(30));
             tokio::pin!(sleep);
