@@ -73,6 +73,7 @@ pub mod health {
     pub enum HealthInfoType {
         SendLoop,
         RedisAdmin,
+        RedisHeartbeat,
     }
 
     impl HealthInfoType {
@@ -80,6 +81,7 @@ pub mod health {
             match self {
                 Self::SendLoop => "send_loop",
                 Self::RedisAdmin => "redis_admin",
+                Self::RedisHeartbeat => "redis_heartbeat",
             }
         }
     }

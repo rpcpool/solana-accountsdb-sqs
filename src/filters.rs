@@ -65,7 +65,7 @@ impl Filters {
     ) -> FiltersResult<Self> {
         let admin = match redis {
             Some(admin_config) => {
-                let admin = ConfigMgmt::new(admin_config).await?;
+                let admin = ConfigMgmt::new(admin_config, node.clone()).await?;
                 config = admin.get_global_config().await?;
                 Some(admin)
             }
@@ -117,6 +117,7 @@ impl Filters {
         loop {
             tokio::select! {
                 msg = admin.pubsub.next() => match msg {
+                    Some(ConfigMgmtMsg::Request { action: ConfigMgmtMsgRequest::Heartbeat, .. }) => {},
                     Some(ConfigMgmtMsg::Request { node, id, action: ConfigMgmtMsgRequest::Ping }) => if node.is_none() || node.as_deref() == Some(this_node.as_str()) {
                         if let Err(error) = admin.send_message(&ConfigMgmtMsg::Response {
                             node: this_node.clone(),
@@ -210,6 +211,7 @@ impl Filters {
                     }
                 },
                 _ = &mut shutdown => {
+                    admin.shutdown();
                     break;
                 }
             }
