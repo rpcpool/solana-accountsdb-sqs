@@ -118,7 +118,7 @@ impl ConfigMgmt {
         channel: String,
         node: String,
     ) {
-        let message = ConfigMgmtMsg::Request {
+        let mut message = ConfigMgmtMsg::Request {
             node: Some(node),
             id: 0,
             action: ConfigMgmtMsgRequest::Heartbeat,
@@ -130,6 +130,9 @@ impl ConfigMgmt {
                 _ = time::sleep(time::Duration::from_secs(10)) => {
                     if let Err(error) = Self::send_message2(&mut connection, &channel, &message).await {
                         error!("heartbeat error: {:?}", error);
+                    }
+                    if let ConfigMgmtMsg::Request{ id, ..} = &mut message {
+                        *id = id.wrapping_add(1);
                     }
                 },
                 _ = &mut shutdown => {
