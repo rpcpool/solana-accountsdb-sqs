@@ -5,7 +5,7 @@ use {
     },
     futures::stream::{Stream, StreamExt},
     log::*,
-    redis::{aio::Connection, AsyncCommands, RedisError, Value},
+    redis::{aio::Connection, AsyncCommands, Client as RedisClient, RedisError, Value},
     serde::{Deserialize, Serialize},
     solana_sdk::pubkey::Pubkey,
     std::{fmt, pin::Pin},
@@ -51,9 +51,8 @@ impl ConfigMgmt {
         let connection = config.url.get_async_connection().await?;
 
         let (send, recv) = oneshot::channel();
-        let connection2 = config.url.get_async_connection().await?;
         tokio::spawn(Self::heartbeat_loop(
-            connection2,
+            config.url.clone(),
             recv,
             config.channel.clone(),
             node,
@@ -118,7 +117,7 @@ impl ConfigMgmt {
     }
 
     async fn heartbeat_loop(
-        mut connection: Connection,
+        url: RedisClient,
         mut shutdown: oneshot::Receiver<()>,
         channel: String,
         node: String,
@@ -129,23 +128,42 @@ impl ConfigMgmt {
             action: ConfigMgmtMsgRequest::Heartbeat,
         };
 
-        set_heath(HealthInfoType::RedisHeartbeat, Ok(()));
         loop {
-            tokio::select! {
-                _ = time::sleep(time::Duration::from_secs(10)) => {
-                    if let Err(error) = Self::send_message2(&mut connection, &channel, &message).await {
+            let mut connection = match url.get_async_connection().await {
+                Ok(connection) => connection,
+                Err(error) => {
+                    set_heath(HealthInfoType::RedisHeartbeat, Err(()));
+                    error!("failed to setup connection for hearbeat: {:?}", error);
+                    time::sleep(time::Duration::from_secs(10)).await;
+                    continue;
+                }
+            };
+
+            loop {
+                match Self::send_message2(&mut connection, &channel, &message).await {
+                    Ok(_) => {
+                        set_heath(HealthInfoType::RedisHeartbeat, Ok(()));
+                    }
+                    Err(error) => {
+                        set_heath(HealthInfoType::RedisHeartbeat, Err(()));
                         error!("heartbeat error: {:?}", error);
+                        break;
                     }
-                    if let ConfigMgmtMsg::Request{ id, ..} = &mut message {
-                        *id = id.wrapping_add(1);
+                }
+
+                if let ConfigMgmtMsg::Request { id, .. } = &mut message {
+                    *id = id.wrapping_add(1);
+                }
+
+                tokio::select! {
+                    _ = time::sleep(time::Duration::from_secs(10)) => {},
+                    _ = &mut shutdown => {
+                        set_heath(HealthInfoType::RedisHeartbeat, Err(()));
+                        return;
                     }
-                },
-                _ = &mut shutdown => {
-                    break;
                 }
             }
         }
-        set_heath(HealthInfoType::RedisHeartbeat, Err(()));
     }
 }
 
