@@ -13,7 +13,7 @@ use {
     },
     solana_sdk::pubkey::Pubkey,
     std::{collections::HashSet, hash::Hash},
-    tokio::time::{sleep_until, Duration, Instant},
+    tokio::time::{sleep, Duration},
 };
 
 #[derive(Debug, Parser)]
@@ -173,7 +173,11 @@ pub enum ArgsActionSet {
 #[derive(Debug, Subcommand)]
 pub enum ArgsActionSendSignal {
     /// Send ping
-    Ping,
+    Ping {
+        /// Ping interval in seconds
+        #[clap(short, long, default_value_t = 10)]
+        interval: u64,
+    },
     /// Ask plugin version info
     Version,
     /// Reload whole config
@@ -356,7 +360,38 @@ async fn main() -> Result<()> {
         },
         ArgsAction::SendSignal { node, signal } => {
             let action = match signal {
-                ArgsActionSendSignal::Ping => ConfigMgmtMsgRequest::Ping,
+                ArgsActionSendSignal::Ping { interval } => loop {
+                    let id = rand::random::<u16>() as u64;
+                    let msg = ConfigMgmtMsg::Request {
+                        node: node.clone(),
+                        id,
+                        action: ConfigMgmtMsgRequest::Ping,
+                    };
+                    println!("Send message: {}", serde_json::to_string(&msg)?);
+                    let receivers = admin.send_message(&msg).await?;
+                    println!(
+                        "{} subscribers received the message (1 of it, this tool itself)",
+                        receivers
+                    );
+
+                    let sleep = sleep(Duration::from_secs(interval));
+                    tokio::pin!(sleep);
+
+                    loop {
+                        tokio::select! {
+                            _ = &mut sleep => {
+                                break
+                            }
+                            msg = admin.pubsub.next() => match msg {
+                                Some(ConfigMgmtMsg::Response { node, id: rid, result, error }) if rid == Some(id) => {
+                                    let msg = ConfigMgmtMsg::Response{ node: node.clone(), id: rid, result, error };
+                                    println!("Received msg from node {:?}: {}", node, serde_json::to_string(&msg)?);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                },
                 ArgsActionSendSignal::Version => ConfigMgmtMsgRequest::Version,
                 ArgsActionSendSignal::Global => ConfigMgmtMsgRequest::Global,
                 ArgsActionSendSignal::PubkeysSet {
@@ -393,7 +428,8 @@ async fn main() -> Result<()> {
                     pubkey: pubkey.parse::<Pubkey>()?,
                 },
             };
-            let id: u64 = rand::random();
+
+            let id = rand::random::<u16>() as u64;
             let msg = ConfigMgmtMsg::Request { node, id, action };
             println!("Send message: {}", serde_json::to_string(&msg)?);
             let receivers = admin.send_message(&msg).await?;
@@ -402,7 +438,7 @@ async fn main() -> Result<()> {
                 receivers
             );
 
-            let sleep = sleep_until(Instant::now() + Duration::from_secs(30));
+            let sleep = sleep(Duration::from_secs(30));
             tokio::pin!(sleep);
 
             let mut received = 0;
