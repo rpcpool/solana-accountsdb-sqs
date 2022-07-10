@@ -135,6 +135,7 @@ impl ConfigMgmt {
             let mut connection = match url.get_async_connection().await {
                 Ok(connection) => {
                     set_health(HealthInfoType::RedisHeartbeat, Ok(()));
+                    info!("created connection for heartbeat");
                     connection
                 }
                 Err(error) => {
@@ -149,6 +150,7 @@ impl ConfigMgmt {
                 match Self::send_message2(&mut connection, &channel, &message).await {
                     Ok(_) => {
                         set_health(HealthInfoType::RedisHeartbeat, Ok(()));
+                        debug!("heartbeat send");
                     }
                     Err(error) => {
                         set_health(HealthInfoType::RedisHeartbeat, Err(()));
