@@ -5,7 +5,7 @@ use {
     },
     futures::stream::{Stream, StreamExt},
     log::*,
-    redis::{aio::Connection, AsyncCommands, RedisError},
+    redis::{aio::Connection, AsyncCommands, RedisError, Value},
     serde::{Deserialize, Serialize},
     solana_sdk::pubkey::Pubkey,
     std::{fmt, pin::Pin},
@@ -62,6 +62,11 @@ impl ConfigMgmt {
         Ok(Self {
             config,
             pubsub: Box::pin(pubsub.into_on_message().filter_map(|msg| async move {
+                match msg.get_payload::<Value>() {
+                    Ok(msg) => debug!("get admin message: {:?}", msg),
+                    Err(error) => error!("failed to get admin message: {}", error),
+                }
+
                 match serde_json::from_slice(msg.get_payload_bytes()) {
                     Ok(msg) => Some(msg),
                     Err(error) => {
@@ -118,7 +123,7 @@ impl ConfigMgmt {
         channel: String,
         node: String,
     ) {
-        let message = ConfigMgmtMsg::Request {
+        let mut message = ConfigMgmtMsg::Request {
             node: Some(node),
             id: 0,
             action: ConfigMgmtMsgRequest::Heartbeat,
@@ -130,6 +135,9 @@ impl ConfigMgmt {
                 _ = time::sleep(time::Duration::from_secs(10)) => {
                     if let Err(error) = Self::send_message2(&mut connection, &channel, &message).await {
                         error!("heartbeat error: {:?}", error);
+                    }
+                    if let ConfigMgmtMsg::Request{ id, ..} = &mut message {
+                        *id = id.wrapping_add(1);
                     }
                 },
                 _ = &mut shutdown => {
