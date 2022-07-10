@@ -1,7 +1,7 @@
 use {
     crate::{
         config::{ConfigFilters, ConfigRedis, PubkeyWithSource, PubkeyWithSourceError},
-        prom::health::{set_heath, HealthInfoType},
+        prom::health::{set_health, HealthInfoType},
     },
     futures::stream::{Stream, StreamExt},
     log::*,
@@ -10,10 +10,7 @@ use {
     solana_sdk::pubkey::Pubkey,
     std::{fmt, pin::Pin},
     thiserror::Error,
-    tokio::{
-        sync::{oneshot, Mutex},
-        time,
-    },
+    tokio::{sync::oneshot, time},
 };
 
 #[derive(Debug, Error)]
@@ -31,7 +28,6 @@ pub type AdminResult<T = ()> = Result<T, AdminError>;
 pub struct ConfigMgmt {
     pub config: ConfigRedis,
     pub pubsub: Pin<Box<dyn Stream<Item = ConfigMgmtMsg> + Send + Sync>>,
-    connection: Mutex<Connection>,
     shutdown: oneshot::Sender<()>,
 }
 
@@ -47,8 +43,6 @@ impl ConfigMgmt {
     pub async fn new(config: ConfigRedis, node: String) -> AdminResult<Self> {
         let mut pubsub = config.url.get_async_connection().await?.into_pubsub();
         pubsub.subscribe(&config.channel).await?;
-
-        let connection = config.url.get_async_connection().await?;
 
         let (send, recv) = oneshot::channel();
         tokio::spawn(Self::heartbeat_loop(
@@ -74,7 +68,6 @@ impl ConfigMgmt {
                     }
                 }
             })),
-            connection: Mutex::new(connection),
             shutdown: send,
         })
     }
@@ -101,8 +94,8 @@ impl ConfigMgmt {
     }
 
     pub async fn send_message(&self, message: &ConfigMgmtMsg) -> AdminResult<usize> {
-        let mut connection = self.connection.lock().await;
-        Self::send_message2(&mut *connection, &self.config.channel, message).await
+        let mut connection = self.config.url.get_async_connection().await?;
+        Self::send_message2(&mut connection, &self.config.channel, message).await
     }
 
     async fn send_message2(
@@ -132,7 +125,7 @@ impl ConfigMgmt {
             let mut connection = match url.get_async_connection().await {
                 Ok(connection) => connection,
                 Err(error) => {
-                    set_heath(HealthInfoType::RedisHeartbeat, Err(()));
+                    set_health(HealthInfoType::RedisHeartbeat, Err(()));
                     error!("failed to setup connection for hearbeat: {:?}", error);
                     time::sleep(time::Duration::from_secs(10)).await;
                     continue;
@@ -142,10 +135,10 @@ impl ConfigMgmt {
             loop {
                 match Self::send_message2(&mut connection, &channel, &message).await {
                     Ok(_) => {
-                        set_heath(HealthInfoType::RedisHeartbeat, Ok(()));
+                        set_health(HealthInfoType::RedisHeartbeat, Ok(()));
                     }
                     Err(error) => {
-                        set_heath(HealthInfoType::RedisHeartbeat, Err(()));
+                        set_health(HealthInfoType::RedisHeartbeat, Err(()));
                         error!("heartbeat error: {:?}", error);
                         break;
                     }
@@ -158,7 +151,7 @@ impl ConfigMgmt {
                 tokio::select! {
                     _ = time::sleep(time::Duration::from_secs(10)) => {},
                     _ = &mut shutdown => {
-                        set_heath(HealthInfoType::RedisHeartbeat, Err(()));
+                        set_health(HealthInfoType::RedisHeartbeat, Err(()));
                         return;
                     }
                 }
