@@ -361,6 +361,8 @@ async fn main() -> Result<()> {
         ArgsAction::SendSignal { node, signal } => {
             let action = match signal {
                 ArgsActionSendSignal::Ping { interval } => loop {
+                    let mut pubsub = admin.get_pubsub().await?;
+
                     let id = rand::random::<u16>() as u64;
                     let msg = ConfigMgmtMsg::Request {
                         node: node.clone(),
@@ -374,14 +376,14 @@ async fn main() -> Result<()> {
                         receivers
                     );
 
-                    let mut pubsub = admin.get_pubsub().await?;
                     let sleep = sleep(Duration::from_secs(interval));
                     tokio::pin!(sleep);
+
                     loop {
                         tokio::select! {
                             msg = pubsub.next() => match msg {
                                 Some(ConfigMgmtMsg::Response { node, id: rid, result, error }) if rid == Some(id) => {
-                                    let msg = ConfigMgmtMsg::Response{ node: node.clone(), id: rid, result, error };
+                                    let msg = ConfigMgmtMsg::Response { node: node.clone(), id: rid, result, error };
                                     println!("Received msg from node {:?}: {}", node, serde_json::to_string(&msg)?);
                                 }
                                 _ => {}
@@ -429,6 +431,8 @@ async fn main() -> Result<()> {
                 },
             };
 
+            let mut pubsub = admin.get_pubsub().await?;
+
             let id = rand::random::<u16>() as u64;
             let msg = ConfigMgmtMsg::Request { node, id, action };
             println!("Send message: {}", serde_json::to_string(&msg)?);
@@ -438,15 +442,15 @@ async fn main() -> Result<()> {
                 receivers
             );
 
-            let mut received = 0;
-            let mut pubsub = admin.get_pubsub().await?;
             let sleep = sleep(Duration::from_secs(30));
             tokio::pin!(sleep);
+
+            let mut received = 0;
             loop {
                 tokio::select! {
                     msg = pubsub.next() => match msg {
                         Some(ConfigMgmtMsg::Response { node, id: rid, result, error }) if rid == Some(id) => {
-                            let msg = ConfigMgmtMsg::Response{ node: node.clone(), id: rid, result, error };
+                            let msg = ConfigMgmtMsg::Response { node: node.clone(), id: rid, result, error };
                             println!("Received msg from node {:?}: {}", node, serde_json::to_string(&msg)?);
                             received += 1;
                         }

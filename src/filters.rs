@@ -106,7 +106,10 @@ impl Filters {
     ) {
         async fn send_message(admin: &mut ConfigMgmt, message: &ConfigMgmtMsg) {
             let status = match admin.send_message(message).await {
-                Ok(_) => Ok(()),
+                Ok(receivers) => {
+                    debug!("message sent to {} receivers", receivers);
+                    Ok(())
+                }
                 Err(error) => {
                     error!("failed to send admin message: {:?}", error);
                     Err(())
@@ -120,6 +123,7 @@ impl Filters {
             let mut pubsub = match admin.get_pubsub().await {
                 Ok(pubsub) => {
                     set_health(HealthInfoType::RedisAdmin, Ok(()));
+                    info!("admin pubsub created");
                     pubsub
                 }
                 Err(error) => {
@@ -147,6 +151,7 @@ impl Filters {
                     let mut locked = inner.lock().await;
                     *locked = new_inner;
                     set_health(HealthInfoType::RedisAdmin, Ok(()));
+                    info!("config loaded from redis and updated");
                     (Some("config updated".to_owned()), None)
                 }
                 Err(error) => {
