@@ -208,7 +208,7 @@ async fn main() -> Result<()> {
 
     let config = Config::load_from_file(&args.config)?;
     let config_admin = config.redis.clone().expect("defined redis config");
-    let mut admin = ConfigMgmt::new(config_admin.clone(), config.node.clone()).await?;
+    let admin = ConfigMgmt::new(config_admin.clone(), None).await?;
 
     match args.action {
         ArgsAction::Init => {
@@ -374,20 +374,20 @@ async fn main() -> Result<()> {
                         receivers
                     );
 
+                    let mut pubsub = admin.get_pubsub().await?;
                     let sleep = sleep(Duration::from_secs(interval));
                     tokio::pin!(sleep);
-
                     loop {
                         tokio::select! {
-                            _ = &mut sleep => {
-                                break
-                            }
-                            msg = admin.pubsub.next() => match msg {
+                            msg = pubsub.next() => match msg {
                                 Some(ConfigMgmtMsg::Response { node, id: rid, result, error }) if rid == Some(id) => {
                                     let msg = ConfigMgmtMsg::Response{ node: node.clone(), id: rid, result, error };
                                     println!("Received msg from node {:?}: {}", node, serde_json::to_string(&msg)?);
                                 }
                                 _ => {}
+                            },
+                            _ = &mut sleep => {
+                                break
                             }
                         }
                     }
@@ -438,12 +438,20 @@ async fn main() -> Result<()> {
                 receivers
             );
 
+            let mut received = 0;
+            let mut pubsub = admin.get_pubsub().await?;
             let sleep = sleep(Duration::from_secs(30));
             tokio::pin!(sleep);
-
-            let mut received = 0;
             loop {
                 tokio::select! {
+                    msg = pubsub.next() => match msg {
+                        Some(ConfigMgmtMsg::Response { node, id: rid, result, error }) if rid == Some(id) => {
+                            let msg = ConfigMgmtMsg::Response{ node: node.clone(), id: rid, result, error };
+                            println!("Received msg from node {:?}: {}", node, serde_json::to_string(&msg)?);
+                            received += 1;
+                        }
+                        _ => {}
+                    },
                     _ = &mut sleep => {
                         if received > 0 {
                             println!("Total received: {}, exit.", received);
@@ -452,19 +460,12 @@ async fn main() -> Result<()> {
                         }
                         break
                     }
-                    msg = admin.pubsub.next() => match msg {
-                        Some(ConfigMgmtMsg::Response { node, id: rid, result, error }) if rid == Some(id) => {
-                            let msg = ConfigMgmtMsg::Response{ node: node.clone(), id: rid, result, error };
-                            println!("Received msg from node {:?}: {}", node, serde_json::to_string(&msg)?);
-                            received += 1;
-                        }
-                        _ => {}
-                    }
                 }
             }
         }
         ArgsAction::Watch => {
-            while let Some(msg) = admin.pubsub.next().await {
+            let mut pubsub = admin.get_pubsub().await?;
+            while let Some(msg) = pubsub.next().await {
                 println!("Received msg: {}", serde_json::to_string(&msg).unwrap());
             }
             println!("stream is finished");

@@ -1,19 +1,16 @@
 use {
     crate::{
         config::{ConfigFilters, ConfigRedis, PubkeyWithSource, PubkeyWithSourceError},
-        prom::health::{set_heath, HealthInfoType},
+        prom::health::{set_health, HealthInfoType},
     },
     futures::stream::{Stream, StreamExt},
     log::*,
-    redis::{aio::Connection, AsyncCommands, RedisError, Value},
+    redis::{aio::Connection, AsyncCommands, Client as RedisClient, RedisError, Value},
     serde::{Deserialize, Serialize},
     solana_sdk::pubkey::Pubkey,
     std::{fmt, pin::Pin},
     thiserror::Error,
-    tokio::{
-        sync::{oneshot, Mutex},
-        time,
-    },
+    tokio::{sync::oneshot, time},
 };
 
 #[derive(Debug, Error)]
@@ -30,9 +27,7 @@ pub type AdminResult<T = ()> = Result<T, AdminError>;
 
 pub struct ConfigMgmt {
     pub config: ConfigRedis,
-    pub pubsub: Pin<Box<dyn Stream<Item = ConfigMgmtMsg> + Send + Sync>>,
-    connection: Mutex<Connection>,
-    shutdown: oneshot::Sender<()>,
+    shutdown: Option<oneshot::Sender<()>>,
 }
 
 impl fmt::Debug for ConfigMgmt {
@@ -44,27 +39,34 @@ impl fmt::Debug for ConfigMgmt {
 }
 
 impl ConfigMgmt {
-    pub async fn new(config: ConfigRedis, node: String) -> AdminResult<Self> {
-        let mut pubsub = config.url.get_async_connection().await?.into_pubsub();
-        pubsub.subscribe(&config.channel).await?;
+    pub async fn new(config: ConfigRedis, node: Option<String>) -> AdminResult<Self> {
+        let shutdown = match node {
+            Some(node) => {
+                let (send, recv) = oneshot::channel();
+                tokio::spawn(Self::heartbeat_loop(
+                    config.url.clone(),
+                    recv,
+                    config.channel.clone(),
+                    node,
+                ));
+                Some(send)
+            }
+            None => None,
+        };
 
-        let connection = config.url.get_async_connection().await?;
+        Ok(Self { config, shutdown })
+    }
 
-        let (send, recv) = oneshot::channel();
-        let connection2 = config.url.get_async_connection().await?;
-        tokio::spawn(Self::heartbeat_loop(
-            connection2,
-            recv,
-            config.channel.clone(),
-            node,
-        ));
-
-        Ok(Self {
-            config,
-            pubsub: Box::pin(pubsub.into_on_message().filter_map(|msg| async move {
+    pub async fn get_pubsub(
+        &self,
+    ) -> AdminResult<Pin<Box<dyn Stream<Item = ConfigMgmtMsg> + Send + Sync>>> {
+        let mut pubsub = self.config.url.get_async_connection().await?.into_pubsub();
+        pubsub.subscribe(&self.config.channel).await?;
+        Ok(Box::pin(pubsub.into_on_message().filter_map(
+            |msg| async move {
                 match msg.get_payload::<Value>() {
-                    Ok(msg) => debug!("get admin message: {:?}", msg),
-                    Err(error) => error!("failed to get admin message: {}", error),
+                    Ok(msg) => debug!("received admin message: {:?}", msg),
+                    Err(error) => error!("failed to decode admin message: {}", error),
                 }
 
                 match serde_json::from_slice(msg.get_payload_bytes()) {
@@ -74,14 +76,14 @@ impl ConfigMgmt {
                         None
                     }
                 }
-            })),
-            connection: Mutex::new(connection),
-            shutdown: send,
-        })
+            },
+        )))
     }
 
     pub fn shutdown(self) {
-        let _ = self.shutdown.send(());
+        if let Some(shutdown) = self.shutdown {
+            let _ = shutdown.send(());
+        }
     }
 
     pub async fn get_global_config(&self) -> AdminResult<ConfigFilters> {
@@ -102,8 +104,8 @@ impl ConfigMgmt {
     }
 
     pub async fn send_message(&self, message: &ConfigMgmtMsg) -> AdminResult<usize> {
-        let mut connection = self.connection.lock().await;
-        Self::send_message2(&mut *connection, &self.config.channel, message).await
+        let mut connection = self.config.url.get_async_connection().await?;
+        Self::send_message2(&mut connection, &self.config.channel, message).await
     }
 
     async fn send_message2(
@@ -118,7 +120,7 @@ impl ConfigMgmt {
     }
 
     async fn heartbeat_loop(
-        mut connection: Connection,
+        url: RedisClient,
         mut shutdown: oneshot::Receiver<()>,
         channel: String,
         node: String,
@@ -129,23 +131,45 @@ impl ConfigMgmt {
             action: ConfigMgmtMsgRequest::Heartbeat,
         };
 
-        set_heath(HealthInfoType::RedisHeartbeat, Ok(()));
         loop {
-            tokio::select! {
-                _ = time::sleep(time::Duration::from_secs(10)) => {
-                    if let Err(error) = Self::send_message2(&mut connection, &channel, &message).await {
+            let mut connection = match url.get_async_connection().await {
+                Ok(connection) => {
+                    set_health(HealthInfoType::RedisHeartbeat, Ok(()));
+                    connection
+                }
+                Err(error) => {
+                    set_health(HealthInfoType::RedisHeartbeat, Err(()));
+                    error!("failed to setup connection for hearbeat: {:?}", error);
+                    time::sleep(time::Duration::from_secs(10)).await;
+                    continue;
+                }
+            };
+
+            loop {
+                match Self::send_message2(&mut connection, &channel, &message).await {
+                    Ok(_) => {
+                        set_health(HealthInfoType::RedisHeartbeat, Ok(()));
+                    }
+                    Err(error) => {
+                        set_health(HealthInfoType::RedisHeartbeat, Err(()));
                         error!("heartbeat error: {:?}", error);
+                        break;
                     }
-                    if let ConfigMgmtMsg::Request{ id, ..} = &mut message {
-                        *id = id.wrapping_add(1);
+                }
+
+                if let ConfigMgmtMsg::Request { id, .. } = &mut message {
+                    *id = id.wrapping_add(1);
+                }
+
+                tokio::select! {
+                    _ = time::sleep(time::Duration::from_secs(10)) => {},
+                    _ = &mut shutdown => {
+                        set_health(HealthInfoType::RedisHeartbeat, Err(()));
+                        return;
                     }
-                },
-                _ = &mut shutdown => {
-                    break;
                 }
             }
         }
-        set_heath(HealthInfoType::RedisHeartbeat, Err(()));
     }
 }
 

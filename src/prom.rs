@@ -86,7 +86,7 @@ pub mod health {
         }
     }
 
-    pub fn set_heath(r#type: HealthInfoType, status: Result<(), ()>) {
+    pub fn set_health(r#type: HealthInfoType, status: Result<(), ()>) {
         let value = if status.is_ok() { 1 } else { 0 };
         HEALTH_INFO.with_label_values(&[r#type.as_str()]).set(value);
     }
