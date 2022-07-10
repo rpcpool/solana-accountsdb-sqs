@@ -22,7 +22,10 @@ use {
         sync::Arc,
     },
     thiserror::Error,
-    tokio::sync::{oneshot, MappedMutexGuard, Mutex, MutexGuard},
+    tokio::{
+        sync::{oneshot, MappedMutexGuard, Mutex, MutexGuard},
+        time,
+    },
 };
 
 #[derive(Debug, Error)]
@@ -65,7 +68,7 @@ impl Filters {
     ) -> FiltersResult<Self> {
         let admin = match redis {
             Some(admin_config) => {
-                let admin = ConfigMgmt::new(admin_config, node.clone()).await?;
+                let admin = ConfigMgmt::new(admin_config, Some(node.clone())).await?;
                 config = admin.get_global_config().await?;
                 Some(admin)
             }
@@ -112,113 +115,128 @@ impl Filters {
             set_health(HealthInfoType::RedisAdmin, status);
         }
 
-        send_message(
-            &mut admin,
-            &ConfigMgmtMsg::Response {
-                node: this_node.clone(),
-                id: None,
-                result: Some("subscribed on updates".to_owned()),
-                error: None,
-            },
-        )
-        .await;
-
         loop {
-            tokio::select! {
-                msg = admin.pubsub.next() => {
+            let mut pubsub = match admin.get_pubsub().await {
+                Ok(pubsub) => {
                     set_health(HealthInfoType::RedisAdmin, Ok(()));
-                    match msg {
-                        Some(ConfigMgmtMsg::Request { action: ConfigMgmtMsgRequest::Heartbeat, .. }) => {},
-                        Some(ConfigMgmtMsg::Request { node, id, action: ConfigMgmtMsgRequest::Ping }) => if node.is_none() || node.as_deref() == Some(this_node.as_str()) {
-                            send_message(&mut admin, &ConfigMgmtMsg::Response {
-                                node: this_node.clone(),
-                                id: Some(id),
-                                result: Some("pong".to_owned()),
-                                error: None
-                            }).await;
-                        }
-                        Some(ConfigMgmtMsg::Request { node, id, action: ConfigMgmtMsgRequest::Version }) => if node.is_none() || node.as_deref() == Some(this_node.as_str()) {
-                            send_message(&mut admin, &ConfigMgmtMsg::Response {
-                                node: this_node.clone(),
-                                id: Some(id),
-                                result: Some(serde_json::to_string(&VERSION).unwrap()),
-                                error: None
-                            }).await;
-                        }
-                        Some(ConfigMgmtMsg::Request { node, id, action: ConfigMgmtMsgRequest::Global }) => if node.is_none() || node.as_deref() == Some(this_node.as_str()) {
-                        let updated = match admin.get_global_config().await {
-                                Ok(config) => {
-                                    let new_inner = FiltersInner::new(config);
-
-                                    let mut locked = inner.lock().await;
-                                    *locked = new_inner;
-                                    if logs {
-                                        info!("Update filters: {:?}", locked);
-                                    }
-
-                                    Ok(())
-                                },
-                                Err(error) => Err(format!("failed to read config on update: {:?}", error))
-                            };
-
-                            let (result, error) = match updated {
-                                Ok(()) => (Some("ok".to_owned()), None),
-                                Err(error) => {
-                                    if logs {
-                                        error!("{}", error);
-                                    }
-                                    (None, Some(error))
-                                }
-                            };
-
-                            send_message(&mut admin, &ConfigMgmtMsg::Response {
-                                node: this_node.clone(),
-                                id: Some(id),
-                                result,
-                                error,
-                            }).await;
-                        }
-                        Some(ConfigMgmtMsg::Request { node, id, action: ConfigMgmtMsgRequest::PubkeysSet { filter, action, pubkey } }) => if node.is_none() || node.as_deref() == Some(this_node.as_str()) {
-                            let mut locked = inner.lock().await;
-                            let updated = match filter {
-                                ConfigMgmtMsgFilter::Accounts { name, kind } => {
-                                    locked.accounts.change_pubkeys(name, kind, action, pubkey, logs)
-                                },
-                                ConfigMgmtMsgFilter::Transactions {name, kind } => {
-                                    locked.transactions.change_pubkeys(name, kind, action, pubkey, logs)
-                                },
-                            };
-                            drop(locked);
-
-                            let (result, error) = match updated {
-                                Ok(()) => (Some("ok".to_owned()), None),
-                                Err(error) => {
-                                    if logs {
-                                        error!("{}", error);
-                                    }
-                                    (None, Some(error))
-                                }
-                            };
-
-                            send_message(&mut admin, &ConfigMgmtMsg::Response {
-                                node: this_node.clone(),
-                                id: Some(id),
-                                result,
-                                error,
-                            }).await;
-                        }
-                        Some(ConfigMgmtMsg::Response { .. }) => {},
-                        None => {
-                            set_health(HealthInfoType::RedisAdmin, Err(()));
-                            error!("filters changes subscription failed");
-                            break;
-                        }
-                    }
-                },
-                _ = &mut shutdown => {
+                    pubsub
+                }
+                Err(error) => {
+                    error!("failed to subscribe on message updates: {:?}", error);
                     set_health(HealthInfoType::RedisAdmin, Err(()));
-                    admin.shutdown();
-                    break;
+                    time::sleep(time::Duration::from_secs(10)).await;
+                    continue;
+                }
+            };
+
+            send_message(
+                &mut admin,
+                &ConfigMgmtMsg::Response {
+                    node: this_node.clone(),
+                    id: None,
+                    result: Some("subscribed on updates".to_owned()),
+                    error: None,
+                },
+            )
+            .await;
+
+            loop {
+                tokio::select! {
+                    msg = pubsub.next() => {
+                        set_health(HealthInfoType::RedisAdmin, Ok(()));
+                        match msg {
+                            Some(ConfigMgmtMsg::Request { action: ConfigMgmtMsgRequest::Heartbeat, .. }) => {},
+                            Some(ConfigMgmtMsg::Request { node, id, action: ConfigMgmtMsgRequest::Ping }) => if node.is_none() || node.as_deref() == Some(this_node.as_str()) {
+                                send_message(&mut admin, &ConfigMgmtMsg::Response {
+                                    node: this_node.clone(),
+                                    id: Some(id),
+                                    result: Some("pong".to_owned()),
+                                    error: None
+                                }).await;
+                            }
+                            Some(ConfigMgmtMsg::Request { node, id, action: ConfigMgmtMsgRequest::Version }) => if node.is_none() || node.as_deref() == Some(this_node.as_str()) {
+                                send_message(&mut admin, &ConfigMgmtMsg::Response {
+                                    node: this_node.clone(),
+                                    id: Some(id),
+                                    result: Some(serde_json::to_string(&VERSION).unwrap()),
+                                    error: None
+                                }).await;
+                            }
+                            Some(ConfigMgmtMsg::Request { node, id, action: ConfigMgmtMsgRequest::Global }) => if node.is_none() || node.as_deref() == Some(this_node.as_str()) {
+                                let updated = match admin.get_global_config().await {
+                                    Ok(config) => {
+                                        let new_inner = FiltersInner::new(config);
+
+                                        let mut locked = inner.lock().await;
+                                        *locked = new_inner;
+                                        if logs {
+                                            info!("Update filters: {:?}", locked);
+                                        }
+
+                                        Ok(())
+                                    },
+                                    Err(error) => Err(format!("failed to read config on update: {:?}", error))
+                                };
+
+                                let (result, error) = match updated {
+                                    Ok(()) => (Some("ok".to_owned()), None),
+                                    Err(error) => {
+                                        if logs {
+                                            error!("{}", error);
+                                        }
+                                        (None, Some(error))
+                                    }
+                                };
+
+                                send_message(&mut admin, &ConfigMgmtMsg::Response {
+                                    node: this_node.clone(),
+                                    id: Some(id),
+                                    result,
+                                    error,
+                                }).await;
+                            }
+                            Some(ConfigMgmtMsg::Request { node, id, action: ConfigMgmtMsgRequest::PubkeysSet { filter, action, pubkey } }) => if node.is_none() || node.as_deref() == Some(this_node.as_str()) {
+                                let mut locked = inner.lock().await;
+                                let updated = match filter {
+                                    ConfigMgmtMsgFilter::Accounts { name, kind } => {
+                                        locked.accounts.change_pubkeys(name, kind, action, pubkey, logs)
+                                    },
+                                    ConfigMgmtMsgFilter::Transactions {name, kind } => {
+                                        locked.transactions.change_pubkeys(name, kind, action, pubkey, logs)
+                                    },
+                                };
+                                drop(locked);
+
+                                let (result, error) = match updated {
+                                    Ok(()) => (Some("ok".to_owned()), None),
+                                    Err(error) => {
+                                        if logs {
+                                            error!("{}", error);
+                                        }
+                                        (None, Some(error))
+                                    }
+                                };
+
+                                send_message(&mut admin, &ConfigMgmtMsg::Response {
+                                    node: this_node.clone(),
+                                    id: Some(id),
+                                    result,
+                                    error,
+                                }).await;
+                            }
+                            Some(ConfigMgmtMsg::Response { .. }) => {},
+                            None => {
+                                set_health(HealthInfoType::RedisAdmin, Err(()));
+                                error!("admin subscription finished");
+                                break;
+                            }
+                        }
+                    },
+                    _ = &mut shutdown => {
+                        set_health(HealthInfoType::RedisAdmin, Err(()));
+                        admin.shutdown();
+                        return;
+                    }
                 }
             }
         }

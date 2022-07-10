@@ -27,8 +27,7 @@ pub type AdminResult<T = ()> = Result<T, AdminError>;
 
 pub struct ConfigMgmt {
     pub config: ConfigRedis,
-    pub pubsub: Pin<Box<dyn Stream<Item = ConfigMgmtMsg> + Send + Sync>>,
-    shutdown: oneshot::Sender<()>,
+    shutdown: Option<oneshot::Sender<()>>,
 }
 
 impl fmt::Debug for ConfigMgmt {
@@ -40,24 +39,34 @@ impl fmt::Debug for ConfigMgmt {
 }
 
 impl ConfigMgmt {
-    pub async fn new(config: ConfigRedis, node: String) -> AdminResult<Self> {
-        let mut pubsub = config.url.get_async_connection().await?.into_pubsub();
-        pubsub.subscribe(&config.channel).await?;
+    pub async fn new(config: ConfigRedis, node: Option<String>) -> AdminResult<Self> {
+        let shutdown = match node {
+            Some(node) => {
+                let (send, recv) = oneshot::channel();
+                tokio::spawn(Self::heartbeat_loop(
+                    config.url.clone(),
+                    recv,
+                    config.channel.clone(),
+                    node,
+                ));
+                Some(send)
+            }
+            None => None,
+        };
 
-        let (send, recv) = oneshot::channel();
-        tokio::spawn(Self::heartbeat_loop(
-            config.url.clone(),
-            recv,
-            config.channel.clone(),
-            node,
-        ));
+        Ok(Self { config, shutdown })
+    }
 
-        Ok(Self {
-            config,
-            pubsub: Box::pin(pubsub.into_on_message().filter_map(|msg| async move {
+    pub async fn get_pubsub(
+        &self,
+    ) -> AdminResult<Pin<Box<dyn Stream<Item = ConfigMgmtMsg> + Send + Sync>>> {
+        let mut pubsub = self.config.url.get_async_connection().await?.into_pubsub();
+        pubsub.subscribe(&self.config.channel).await?;
+        Ok(Box::pin(pubsub.into_on_message().filter_map(
+            |msg| async move {
                 match msg.get_payload::<Value>() {
-                    Ok(msg) => debug!("get admin message: {:?}", msg),
-                    Err(error) => error!("failed to get admin message: {}", error),
+                    Ok(msg) => debug!("received admin message: {:?}", msg),
+                    Err(error) => error!("failed to decode admin message: {}", error),
                 }
 
                 match serde_json::from_slice(msg.get_payload_bytes()) {
@@ -67,13 +76,14 @@ impl ConfigMgmt {
                         None
                     }
                 }
-            })),
-            shutdown: send,
-        })
+            },
+        )))
     }
 
     pub fn shutdown(self) {
-        let _ = self.shutdown.send(());
+        if let Some(shutdown) = self.shutdown {
+            let _ = shutdown.send(());
+        }
     }
 
     pub async fn get_global_config(&self) -> AdminResult<ConfigFilters> {
@@ -123,7 +133,10 @@ impl ConfigMgmt {
 
         loop {
             let mut connection = match url.get_async_connection().await {
-                Ok(connection) => connection,
+                Ok(connection) => {
+                    set_health(HealthInfoType::RedisHeartbeat, Err(()));
+                    connection
+                }
                 Err(error) => {
                     set_health(HealthInfoType::RedisHeartbeat, Err(()));
                     error!("failed to setup connection for hearbeat: {:?}", error);
