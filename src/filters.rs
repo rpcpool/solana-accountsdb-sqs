@@ -116,6 +116,7 @@ impl Filters {
         }
 
         loop {
+            // Create pubsub
             let mut pubsub = match admin.get_pubsub().await {
                 Ok(pubsub) => {
                     set_health(HealthInfoType::RedisAdmin, Ok(()));
@@ -128,7 +129,6 @@ impl Filters {
                     continue;
                 }
             };
-
             send_message(
                 &mut admin,
                 &ConfigMgmtMsg::Response {
@@ -140,6 +140,41 @@ impl Filters {
             )
             .await;
 
+            // Update global config from Redis
+            let (result, error) = match admin.get_global_config().await {
+                Ok(config) => {
+                    let new_inner = FiltersInner::new(config);
+                    let mut locked = inner.lock().await;
+                    *locked = new_inner;
+                    set_health(HealthInfoType::RedisAdmin, Ok(()));
+                    (Some("config updated".to_owned()), None)
+                }
+                Err(error) => {
+                    set_health(HealthInfoType::RedisAdmin, Err(()));
+                    error!("failed to load global config in pubsub: {:?}", error);
+                    (
+                        None,
+                        Some(format!("failed to load global config: {:?}", error)),
+                    )
+                }
+            };
+            send_message(
+                &mut admin,
+                &ConfigMgmtMsg::Response {
+                    node: this_node.clone(),
+                    id: None,
+                    result,
+                    error: error.clone(),
+                },
+            )
+            .await;
+            if error.is_some() {
+                set_health(HealthInfoType::RedisAdmin, Err(()));
+                time::sleep(time::Duration::from_secs(10)).await;
+                continue;
+            }
+
+            // Handle requests
             loop {
                 tokio::select! {
                     msg = pubsub.next() => {
