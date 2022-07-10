@@ -383,7 +383,7 @@ async fn main() -> Result<()> {
                         tokio::select! {
                             msg = pubsub.next() => match msg {
                                 Some(ConfigMgmtMsg::Response { node, id: rid, result, error }) if rid == Some(id) => {
-                                    let msg = ConfigMgmtMsg::Response{ node: node.clone(), id: rid, result, error };
+                                    let msg = ConfigMgmtMsg::Response { node: node.clone(), id: rid, result, error };
                                     println!("Received msg from node {:?}: {}", node, serde_json::to_string(&msg)?);
                                 }
                                 _ => {}
@@ -450,7 +450,7 @@ async fn main() -> Result<()> {
                 tokio::select! {
                     msg = pubsub.next() => match msg {
                         Some(ConfigMgmtMsg::Response { node, id: rid, result, error }) if rid == Some(id) => {
-                            let msg = ConfigMgmtMsg::Response{ node: node.clone(), id: rid, result, error };
+                            let msg = ConfigMgmtMsg::Response { node: node.clone(), id: rid, result, error };
                             println!("Received msg from node {:?}: {}", node, serde_json::to_string(&msg)?);
                             received += 1;
                         }

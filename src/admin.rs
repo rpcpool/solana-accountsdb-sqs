@@ -17,6 +17,8 @@ use {
 pub enum AdminError {
     #[error("redis error: {0}")]
     Redis(#[from] RedisError),
+    #[error("connect timeout: {0}")]
+    ConnectionTimeout(#[from] time::error::Elapsed),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("pubkeys failed with redis: {0}")]
@@ -24,6 +26,10 @@ pub enum AdminError {
 }
 
 pub type AdminResult<T = ()> = Result<T, AdminError>;
+
+pub async fn connect_with_timeout(client: &RedisClient) -> AdminResult<Connection> {
+    Ok(time::timeout(time::Duration::from_secs(5), client.get_async_connection()).await??)
+}
 
 pub struct ConfigMgmt {
     pub config: ConfigRedis,
@@ -60,7 +66,7 @@ impl ConfigMgmt {
     pub async fn get_pubsub(
         &self,
     ) -> AdminResult<Pin<Box<dyn Stream<Item = ConfigMgmtMsg> + Send + Sync>>> {
-        let mut pubsub = self.config.url.get_async_connection().await?.into_pubsub();
+        let mut pubsub = connect_with_timeout(&self.config.url).await?.into_pubsub();
         pubsub.subscribe(&self.config.channel).await?;
         Ok(Box::pin(pubsub.into_on_message().filter_map(
             |msg| async move {
@@ -87,7 +93,7 @@ impl ConfigMgmt {
     }
 
     pub async fn get_global_config(&self) -> AdminResult<ConfigFilters> {
-        let mut connection = self.config.url.get_async_connection().await?;
+        let mut connection = connect_with_timeout(&self.config.url).await?;
         let data: String = connection.get(&self.config.config).await?;
         let mut config: ConfigFilters = serde_json::from_str(&data)?;
         config.load_pubkeys(&mut connection).await?;
@@ -95,7 +101,7 @@ impl ConfigMgmt {
     }
 
     pub async fn set_global_config(&self, config: &ConfigFilters) -> AdminResult {
-        let mut connection = self.config.url.get_async_connection().await?;
+        let mut connection = connect_with_timeout(&self.config.url).await?;
         let mut pipe = redis::pipe();
         config.save_pubkeys(&mut pipe).await?;
         pipe.set(&self.config.config, serde_json::to_string(config)?);
@@ -104,7 +110,7 @@ impl ConfigMgmt {
     }
 
     pub async fn send_message(&self, message: &ConfigMgmtMsg) -> AdminResult<usize> {
-        let mut connection = self.config.url.get_async_connection().await?;
+        let mut connection = connect_with_timeout(&self.config.url).await?;
         Self::send_message2(&mut connection, &self.config.channel, message).await
     }
 
@@ -132,7 +138,7 @@ impl ConfigMgmt {
         };
 
         loop {
-            let mut connection = match url.get_async_connection().await {
+            let mut connection = match connect_with_timeout(&url).await {
                 Ok(connection) => {
                     set_health(HealthInfoType::RedisHeartbeat, Ok(()));
                     info!("created connection for heartbeat");
