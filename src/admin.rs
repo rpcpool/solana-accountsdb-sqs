@@ -134,7 +134,7 @@ impl ConfigMgmt {
         loop {
             let mut connection = match url.get_async_connection().await {
                 Ok(connection) => {
-                    set_health(HealthInfoType::RedisHeartbeat, Err(()));
+                    set_health(HealthInfoType::RedisHeartbeat, Ok(()));
                     connection
                 }
                 Err(error) => {

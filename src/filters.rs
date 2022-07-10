@@ -123,8 +123,8 @@ impl Filters {
                     pubsub
                 }
                 Err(error) => {
-                    error!("failed to subscribe on message updates: {:?}", error);
                     set_health(HealthInfoType::RedisAdmin, Err(()));
+                    error!("failed to subscribe on message updates: {:?}", error);
                     time::sleep(time::Duration::from_secs(10)).await;
                     continue;
                 }
