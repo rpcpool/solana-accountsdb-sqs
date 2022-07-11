@@ -1,5 +1,6 @@
 use {
     crate::{
+        admin::{AdminError, ConfigMgmt},
         aws::{SqsClientQueueUrl, SqsMessageAttributes},
         sqs::SlotStatus,
     },
@@ -24,12 +25,15 @@ use {
         path::{Component, Path, PathBuf},
     },
     thiserror::Error,
+    tokio::time::error::Elapsed as ElapsedError,
 };
 
 #[derive(Debug, Error)]
 pub enum PubkeyWithSourceError {
     #[error("redis error: {0}")]
     Redis(#[from] RedisError),
+    #[error("redis timeout: {0}")]
+    RedisTimeout(#[from] ElapsedError),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("expected loaded pubkeys for redis source")]
@@ -310,7 +314,7 @@ impl ConfigFilters {
         result
     }
 
-    pub async fn save_pubkeys(&self, pipe: &mut RedisPipeline) -> PubkeyWithSourceResult {
+    pub fn save_pubkeys(&self, pipe: &mut RedisPipeline) -> PubkeyWithSourceResult {
         for filter in self.accounts.values() {
             Self::save_pubkeys2(&filter.account, pipe)?;
             Self::save_pubkeys2(&filter.owner, pipe)?;
@@ -410,7 +414,14 @@ impl IntoIterator for PubkeyWithSource {
 impl PubkeyWithSource {
     async fn load(&mut self, connection: &mut RedisConnection) -> PubkeyWithSourceResult {
         if let Self::Redis { set, keys } = self {
-            let smembers: Vec<String> = connection.smembers(&*set).await?;
+            let smembers: Vec<String> = ConfigMgmt::with_timeout(connection.smembers(&*set))
+                .await
+                .map_err(|error| match error {
+                    AdminError::Redis(error) => PubkeyWithSourceError::Redis(error),
+                    AdminError::RedisTimeout(error) => PubkeyWithSourceError::RedisTimeout(error),
+                    _ => unreachable!(),
+                })?;
+
             *keys = Some(
                 smembers
                     .iter()

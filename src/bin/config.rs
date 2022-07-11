@@ -1,7 +1,11 @@
 use {
     anyhow::{anyhow, Result},
     clap::{Parser, Subcommand},
-    futures::stream::StreamExt,
+    futures::{
+        future::FutureExt,
+        stream::{Stream, StreamExt},
+    },
+    pin_project::pin_project,
     redis::AsyncCommands,
     solana_geyser_sqs::{
         admin::{
@@ -12,8 +16,13 @@ use {
         version::VERSION,
     },
     solana_sdk::pubkey::Pubkey,
-    std::{collections::HashSet, hash::Hash},
-    tokio::time::{sleep, Duration},
+    std::{
+        collections::HashSet,
+        hash::Hash,
+        pin::Pin,
+        task::{Context, Poll},
+    },
+    tokio::time::{sleep, Duration, Sleep},
 };
 
 #[derive(Debug, Parser)]
@@ -213,7 +222,8 @@ async fn main() -> Result<()> {
     match args.action {
         ArgsAction::Init => {
             let mut config = config.filters.clone();
-            let mut connection = config_admin.url.get_async_connection().await?;
+            let mut connection =
+                ConfigMgmt::with_timeout(config_admin.url.get_async_connection()).await?;
             config.load_pubkeys(&mut connection).await?;
             admin.set_global_config(&config).await?;
             println!("Config uploaded");
@@ -361,35 +371,48 @@ async fn main() -> Result<()> {
         ArgsAction::SendSignal { node, signal } => {
             let action = match signal {
                 ArgsActionSendSignal::Ping { interval } => loop {
-                    let mut pubsub = admin.get_pubsub().await?;
+                    let pubsub = admin.get_pubsub().await?;
+                    let pubsub_timeout =
+                        TimeoutStream::new(pubsub, Duration::from_secs(interval + 2));
+                    tokio::pin!(pubsub_timeout);
 
-                    let id = rand::random::<u16>() as u64;
-                    let msg = ConfigMgmtMsg::Request {
-                        node: node.clone(),
-                        id,
-                        action: ConfigMgmtMsgRequest::Ping,
-                    };
-                    println!("Send message: {}", serde_json::to_string(&msg)?);
-                    let receivers = admin.send_message(&msg).await?;
-                    println!(
-                        "{} subscribers received the message (1 of it, this tool itself)",
-                        receivers
-                    );
+                    'ping: loop {
+                        let id = rand::random::<u16>() as u64;
+                        let msg = ConfigMgmtMsg::Request {
+                            node: node.clone(),
+                            id,
+                            action: ConfigMgmtMsgRequest::Ping,
+                        };
+                        println!("Send message: {}", serde_json::to_string(&msg)?);
+                        let receivers = admin.send_message(&msg).await?;
+                        println!(
+                            "{} subscribers received the message (1 of it, this tool itself)",
+                            receivers
+                        );
 
-                    let sleep = sleep(Duration::from_secs(interval));
-                    tokio::pin!(sleep);
+                        let next_ping = sleep(Duration::from_secs(interval));
+                        tokio::pin!(next_ping);
 
-                    loop {
-                        tokio::select! {
-                            msg = pubsub.next() => match msg {
-                                Some(ConfigMgmtMsg::Response { node, id: rid, result, error }) if rid == Some(id) => {
-                                    let msg = ConfigMgmtMsg::Response { node: node.clone(), id: rid, result, error };
-                                    println!("Received msg from node {:?}: {}", node, serde_json::to_string(&msg)?);
+                        loop {
+                            tokio::select! {
+                                msg = pubsub_timeout.next() => match msg {
+                                    Some(TimeoutStreamOutput::Timeout) => {
+                                        println!("Subscription timeout");
+                                        break 'ping;
+                                    }
+                                    Some(TimeoutStreamOutput::Item(ConfigMgmtMsg::Response { node, id: rid, result, error })) if rid == Some(id) => {
+                                        let msg = ConfigMgmtMsg::Response { node: node.clone(), id: rid, result, error };
+                                        println!("Received msg from node {:?}: {}", node, serde_json::to_string(&msg)?);
+                                    }
+                                    Some(TimeoutStreamOutput::Item(_)) => {},
+                                    None => {
+                                        println!("Subscription finished");
+                                        break 'ping;
+                                    }
+                                },
+                                _ = &mut next_ping => {
+                                    break;
                                 }
-                                _ => {}
-                            },
-                            _ = &mut sleep => {
-                                break
                             }
                         }
                     }
@@ -469,10 +492,21 @@ async fn main() -> Result<()> {
         }
         ArgsAction::Watch => {
             let mut pubsub = admin.get_pubsub().await?;
-            while let Some(msg) = pubsub.next().await {
-                println!("Received msg: {}", serde_json::to_string(&msg).unwrap());
+            loop {
+                tokio::select! {
+                    msg = pubsub.next() => match msg {
+                        Some(msg) => println!("Received msg: {}", serde_json::to_string(&msg).unwrap()),
+                        None => {
+                            println!("stream is finished");
+                            break
+                        },
+                    },
+                    _ = sleep(Duration::from_secs(60)) => {
+                        println!("failed to receive any notification from pubsub");
+                        break
+                    }
+                }
             }
-            println!("stream is finished");
         }
         ArgsAction::Version => {
             println!("{:#?}", VERSION);
@@ -536,4 +570,60 @@ where
     } else {
         false
     })
+}
+
+#[derive(Debug)]
+enum TimeoutStreamOutput<T> {
+    Timeout,
+    Item(T),
+}
+
+#[pin_project]
+struct TimeoutStream<S> {
+    #[pin]
+    stream: S,
+    #[pin]
+    sleep: Sleep,
+    timeout: Duration,
+    finished: bool,
+}
+
+impl<S> TimeoutStream<S> {
+    fn new(stream: S, timeout: Duration) -> Self {
+        Self {
+            stream,
+            sleep: sleep(timeout),
+            timeout,
+            finished: false,
+        }
+    }
+}
+
+impl<S> Stream for TimeoutStream<S>
+where
+    S: Stream,
+{
+    type Item = TimeoutStreamOutput<S::Item>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+
+        if *this.finished {
+            return Poll::Ready(None);
+        }
+
+        if this.sleep.poll_unpin(cx).is_ready() {
+            *this.finished = true;
+            return Poll::Ready(Some(TimeoutStreamOutput::Timeout));
+        }
+
+        match this.stream.poll_next(cx) {
+            Poll::Ready(Some(item)) => {
+                this.sleep.set(sleep(*this.timeout));
+                Poll::Ready(Some(TimeoutStreamOutput::Item(item)))
+            }
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
 }

@@ -24,7 +24,7 @@ use {
     thiserror::Error,
     tokio::{
         sync::{oneshot, MappedMutexGuard, Mutex, MutexGuard},
-        time,
+        time::{sleep, Duration},
     },
 };
 
@@ -129,7 +129,7 @@ impl Filters {
                 Err(error) => {
                     set_health(HealthInfoType::RedisAdmin, Err(()));
                     error!("failed to subscribe on message updates: {:?}", error);
-                    time::sleep(time::Duration::from_secs(10)).await;
+                    sleep(Duration::from_secs(10)).await;
                     continue;
                 }
             };
@@ -175,7 +175,7 @@ impl Filters {
             .await;
             if error.is_some() {
                 set_health(HealthInfoType::RedisAdmin, Err(()));
-                time::sleep(time::Duration::from_secs(10)).await;
+                sleep(Duration::from_secs(10)).await;
                 continue;
             }
 
@@ -272,6 +272,12 @@ impl Filters {
                             }
                         }
                     },
+                    // Heartbeat each 10s, so 12s should be good
+                    _ = sleep(Duration::from_secs(12)) => {
+                        set_health(HealthInfoType::RedisAdmin, Err(()));
+                        error!("admin subscription timeout");
+                        break;
+                    }
                     _ = &mut shutdown => {
                         set_health(HealthInfoType::RedisAdmin, Err(()));
                         admin.shutdown();
