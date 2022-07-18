@@ -90,6 +90,7 @@ pub struct ReplicaAccountInfo {
     pub rent_epoch: u64,
     pub data: Vec<u8>,
     pub write_version: u64,
+    pub txn_signature: Option<Signature>,
     pub slot: u64,
 }
 
@@ -117,6 +118,26 @@ impl ReplicaAccountInfo {
             None
         }
     }
+
+    pub fn from_versions_and_slot(account: ReplicaAccountInfoVersions, slot: u64) -> Option<Self> {
+        match account {
+            ReplicaAccountInfoVersions::V0_0_1(_account) => {
+                warn!("Unexpected account info version: V0_0_1");
+                None
+            }
+            ReplicaAccountInfoVersions::V0_0_2(account) => Some(Self {
+                pubkey: Pubkey::new(account.pubkey),
+                lamports: account.lamports,
+                owner: Pubkey::new(account.owner),
+                executable: account.executable,
+                rent_epoch: account.rent_epoch,
+                data: account.data.into(),
+                write_version: account.write_version,
+                txn_signature: account.txn_signature.copied(),
+                slot,
+            }),
+        }
+    }
 }
 
 impl PartialOrd for ReplicaAccountInfo {
@@ -134,31 +155,46 @@ impl Ord for ReplicaAccountInfo {
     }
 }
 
-impl<'a> From<(ReplicaAccountInfoVersions<'a>, u64)> for ReplicaAccountInfo {
-    fn from((account, slot): (ReplicaAccountInfoVersions<'a>, u64)) -> Self {
-        match account {
-            ReplicaAccountInfoVersions::V0_0_1(account) => Self {
-                pubkey: Pubkey::new(account.pubkey),
-                lamports: account.lamports,
-                owner: Pubkey::new(account.owner),
-                executable: account.executable,
-                rent_epoch: account.rent_epoch,
-                data: account.data.into(),
-                write_version: account.write_version,
-                slot,
-            },
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct ReplicaTransactionInfo {
     pub signature: Signature,
     pub is_vote: bool,
     pub transaction: Transaction,
     pub meta: UiTransactionStatusMeta,
+    pub index: usize,
     pub slot: u64,
     pub block_time: Option<UnixTimestamp>,
+}
+
+impl ReplicaTransactionInfo {
+    pub fn from_versions_and_slot(tx: ReplicaTransactionInfoVersions, slot: u64) -> Option<Self> {
+        match tx {
+            ReplicaTransactionInfoVersions::V0_0_1(_tx) => {
+                warn!("Unexpected account info version: V0_0_1");
+                None
+            }
+            ReplicaTransactionInfoVersions::V0_0_2(tx) => {
+                let message = tx.transaction.message();
+                Some(ReplicaTransactionInfo {
+                    signature: *tx.signature,
+                    is_vote: tx.is_vote,
+                    transaction: Transaction {
+                        signatures: tx.transaction.signatures().into(),
+                        message: TransactionMessage {
+                            header: *message.header(),
+                            account_keys: message.account_keys().iter().cloned().collect(),
+                            recent_blockhash: *message.recent_blockhash(),
+                            instructions: message.instructions().to_vec(),
+                        },
+                    },
+                    meta: tx.transaction_status_meta.clone().into(),
+                    index: tx.index,
+                    slot,
+                    block_time: None,
+                })
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -437,7 +473,10 @@ impl AwsSqsClient {
         account: ReplicaAccountInfoVersions,
         slot: u64,
     ) -> SqsClientResult {
-        self.send_message(Message::UpdateAccount((account, slot).into()))
+        if let Some(account) = ReplicaAccountInfo::from_versions_and_slot(account, slot) {
+            self.send_message(Message::UpdateAccount(account))?;
+        }
+        Ok(())
     }
 
     pub fn notify_transaction(
@@ -445,24 +484,10 @@ impl AwsSqsClient {
         transaction: ReplicaTransactionInfoVersions,
         slot: u64,
     ) -> SqsClientResult {
-        let ReplicaTransactionInfoVersions::V0_0_1(transaction) = transaction;
-        let message = transaction.transaction.message();
-        self.send_message(Message::NotifyTransaction(ReplicaTransactionInfo {
-            signature: *transaction.signature,
-            is_vote: transaction.is_vote,
-            transaction: Transaction {
-                signatures: transaction.transaction.signatures().into(),
-                message: TransactionMessage {
-                    header: *message.header(),
-                    account_keys: message.account_keys().iter().cloned().collect(),
-                    recent_blockhash: *message.recent_blockhash(),
-                    instructions: message.instructions().to_vec(),
-                },
-            },
-            meta: transaction.transaction_status_meta.clone().into(),
-            slot,
-            block_time: None,
-        }))
+        if let Some(tx) = ReplicaTransactionInfo::from_versions_and_slot(transaction, slot) {
+            self.send_message(Message::NotifyTransaction(tx))?;
+        }
+        Ok(())
     }
 
     pub fn notify_block_metadata(&self, blockinfo: ReplicaBlockInfoVersions) -> SqsClientResult {
