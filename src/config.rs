@@ -10,7 +10,7 @@ use {
         Pipeline as RedisPipeline, RedisError,
     },
     rusoto_core::Region,
-    serde::{de, ser::SerializeStruct, Deserialize, Deserializer, Serialize, Serializer},
+    serde::{de, Deserialize, Deserializer, Serialize, Serializer},
     solana_geyser_plugin_interface::geyser_plugin_interface::{
         GeyserPluginError, Result as PluginResult,
     },
@@ -464,7 +464,7 @@ impl PubkeyWithSource {
     }
 }
 
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ConfigAccountsFilter {
     pub account: HashSet<PubkeyWithSource>,
@@ -473,21 +473,6 @@ pub struct ConfigAccountsFilter {
     pub data_size: HashSet<usize>,
     pub tokenkeg_owner: HashSet<PubkeyWithSource>,
     pub tokenkeg_delegate: HashSet<PubkeyWithSource>,
-}
-
-impl Serialize for ConfigAccountsFilter {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut s = serializer.serialize_struct("ConfigAccountsFilter", 5)?;
-        s.serialize_field("account", &self.account)?;
-        s.serialize_field("owner", &self.owner)?;
-        s.serialize_field("data_size", &self.data_size)?;
-        s.serialize_field("tokenkeg_owner", &self.tokenkeg_owner)?;
-        s.serialize_field("tokenkeg_delegate", &self.tokenkeg_delegate)?;
-        s.end()
-    }
 }
 
 fn deserialize_data_size<'de, D>(deserializer: D) -> Result<HashSet<usize>, D::Error>
@@ -506,7 +491,7 @@ pub struct ConfigTransactionsFilter {
     pub accounts: ConfigTransactionsAccountsFilter,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct ConfigTransactionsAccountsFilter {
     pub include: HashSet<PubkeyWithSource>,
     pub exclude: HashSet<PubkeyWithSource>,
@@ -535,17 +520,5 @@ impl<'de> Deserialize<'de> for ConfigTransactionsAccountsFilter {
             include: raw.include,
             exclude: raw.exclude,
         })
-    }
-}
-
-impl Serialize for ConfigTransactionsAccountsFilter {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut s = serializer.serialize_struct("ConfigTransactionsAccountsFilter", 2)?;
-        s.serialize_field("include", &self.include)?;
-        s.serialize_field("exclude", &self.exclude)?;
-        s.end()
     }
 }
