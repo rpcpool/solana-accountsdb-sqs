@@ -587,6 +587,7 @@ impl AwsSqsClient {
                 account_filters.match_account(&account.pubkey);
                 account_filters.match_owner(&account.owner);
                 account_filters.match_data_size(account.data.len());
+                account_filters.match_serum_event_queue(&account.pubkey, &account.data);
 
                 if account_filters.match_tokenkeg(account) {
                     let owner = account.token_owner().expect("valid tokenkeg");

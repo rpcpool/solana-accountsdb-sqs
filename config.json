@@ -55,6 +55,12 @@
             "tokenkeg-owner-and-size": {
                 "tokenkeg_owner": ["GUnde212311"],
                 "data_size": [165]
+            },
+            "serum": {
+                "serum_event_queue": {
+                    "accounts": ["5KKsLVU6TcbVDK4BS6K1DGDxnh4Q9xjYJ8XaDCG5t8ht"],
+                    "events": [["Fill", "Maker"], ["Fill", "Out", "Maker"]]
+                }
             }
         },
         "transactions": {
