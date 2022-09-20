@@ -407,8 +407,9 @@ impl AccountsFilter {
     {
         let mut count = 0;
         for key in keys {
-            count += 1;
-            map.entry(key).or_default().insert(name.to_string());
+            if map.entry(key).or_default().insert(name.to_string()) {
+                count += 1;
+            }
         }
 
         if count > 0 {
@@ -495,6 +496,9 @@ impl AccountsFilter {
                     if *value == 0 {
                         *existence_field = false;
                     }
+                }
+                if !*existence_field {
+                    map_required.remove(&name);
                 }
 
                 logs.then(|| "removed from")
@@ -615,6 +619,10 @@ impl<'a> AccountsFilterMatch<'a> {
             .filters
             .iter()
             .filter_map(|(name, existence)| {
+                if existence.is_empty() {
+                    return None;
+                }
+
                 let name = name.as_str();
                 let af = &self.accounts_filter;
 
@@ -639,11 +647,7 @@ impl<'a> AccountsFilterMatch<'a> {
                     return None;
                 }
 
-                if existence.is_empty() {
-                    None
-                } else {
-                    Some(name.to_string())
-                }
+                Some(name.to_string())
             })
             .collect()
     }
