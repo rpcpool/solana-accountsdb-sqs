@@ -2,15 +2,17 @@ use {
     crate::{
         admin::{AdminError, ConfigMgmt},
         aws::{SqsClientQueueUrl, SqsMessageAttributes},
+        serum::EventFlag,
         sqs::SlotStatus,
     },
+    enumflags2::BitFlags,
     flate2::{write::GzEncoder, Compression as GzCompression},
     redis::{
         aio::Connection as RedisConnection, AsyncCommands, Client as RedisClient,
         Pipeline as RedisPipeline, RedisError,
     },
     rusoto_core::Region,
-    serde::{de, Deserialize, Deserializer, Serialize, Serializer},
+    serde::{de, ser::SerializeSeq, Deserialize, Deserializer, Serialize, Serializer},
     solana_geyser_plugin_interface::geyser_plugin_interface::{
         GeyserPluginError, Result as PluginResult,
     },
@@ -473,6 +475,7 @@ pub struct ConfigAccountsFilter {
     pub data_size: HashSet<usize>,
     pub tokenkeg_owner: HashSet<PubkeyWithSource>,
     pub tokenkeg_delegate: HashSet<PubkeyWithSource>,
+    pub serum_event_queue: ConfigAccountsFilterSerumEventQueue,
 }
 
 fn deserialize_data_size<'de, D>(deserializer: D) -> Result<HashSet<usize>, D::Error>
@@ -481,6 +484,69 @@ where
 {
     HashSet::<UsizeStr>::deserialize(deserializer)
         .map(|set| set.into_iter().map(|v| v.value).collect())
+}
+
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+pub struct ConfigAccountsFilterSerumEventQueue {
+    pub accounts: HashSet<PubkeyWithSource>,
+    #[serde(
+        deserialize_with = "deserialize_serum_events",
+        serialize_with = "serialize_serum_events"
+    )]
+    pub events: HashSet<BitFlags<EventFlag>>,
+}
+
+fn deserialize_serum_events<'de, D>(
+    deserializer: D,
+) -> Result<HashSet<BitFlags<EventFlag>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Vec::<Vec<&str>>::deserialize(deserializer)?
+        .into_iter()
+        .map(|events| {
+            events
+                .into_iter()
+                .map(|event| {
+                    event
+                        .parse()
+                        .map(BitFlags::<EventFlag>::from_flag)
+                        .map_err(de::Error::custom)
+                })
+                .reduce(|event1, event2| match (event1, event2) {
+                    (Ok(event1), Ok(event2)) => Ok(event1 | event2),
+                    (Err(event1), _) => Err(event1),
+                    (_, Err(event2)) => Err(event2),
+                })
+                .ok_or_else(|| de::Error::custom("Expected at least one Event"))
+                .and_then(|x| x)
+        })
+        .collect::<Result<HashSet<_>, _>>()
+}
+
+fn serialize_serum_events<S>(
+    events: &HashSet<BitFlags<EventFlag>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let mut seq = serializer.serialize_seq(Some(events.len()))?;
+    for flag in events {
+        let events = &[
+            EventFlag::Fill,
+            EventFlag::Out,
+            EventFlag::Bid,
+            EventFlag::Maker,
+            EventFlag::ReleaseFunds,
+        ]
+        .iter()
+        .filter_map(|event| flag.contains(*event).then(|| event.as_str()))
+        .collect::<Vec<_>>();
+
+        seq.serialize_element(events)?;
+    }
+    seq.end()
 }
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]

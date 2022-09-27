@@ -9,9 +9,11 @@ use {
             ConfigTransactionsFilter,
         },
         prom::health::{set_health, HealthInfoType},
+        serum::{self, EventFlag},
         sqs::{ReplicaAccountInfo, ReplicaTransactionInfo},
         version::VERSION,
     },
+    enumflags2::BitFlags,
     futures::stream::StreamExt,
     log::*,
     solana_sdk::{program_pack::Pack, pubkey::Pubkey},
@@ -318,6 +320,7 @@ struct AccountsFilterExistence {
     data_size: bool,
     tokenkeg_owner: bool,
     tokenkeg_delegate: bool,
+    serum_event_queue: bool,
 }
 
 impl AccountsFilterExistence {
@@ -326,7 +329,8 @@ impl AccountsFilterExistence {
             || self.owner
             || self.data_size
             || self.tokenkeg_owner
-            || self.tokenkeg_delegate)
+            || self.tokenkeg_delegate
+            || self.serum_event_queue)
     }
 }
 
@@ -343,12 +347,21 @@ struct AccountsFilter {
     tokenkeg_owner_required: HashMap<String, usize>,
     tokenkeg_delegate: HashMap<Pubkey, HashSet<String>>,
     tokenkeg_delegate_required: HashMap<String, usize>,
+    serum_event_queue: HashMap<(Pubkey, Vec<BitFlags<EventFlag>>), HashSet<String>>,
+    serum_event_queue_required: HashMap<String, usize>,
 }
 
 impl AccountsFilter {
     pub fn new(filters: HashMap<String, ConfigAccountsFilter>) -> Self {
         let mut this = Self::default();
         for (name, filter) in filters.into_iter() {
+            let serum_event_queue_events = filter
+                .serum_event_queue
+                .events
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>();
+
             let existence = AccountsFilterExistence {
                 account: Self::set(
                     &mut this.account,
@@ -388,6 +401,17 @@ impl AccountsFilter {
                         .tokenkeg_delegate
                         .into_iter()
                         .flat_map(|value| value.into_iter()),
+                ),
+                serum_event_queue: Self::set(
+                    &mut this.serum_event_queue,
+                    &mut this.serum_event_queue_required,
+                    &name,
+                    filter
+                        .serum_event_queue
+                        .accounts
+                        .into_iter()
+                        .flat_map(|value| value.into_iter())
+                        .map(|pubkey| (pubkey, serum_event_queue_events.clone())),
                 ),
             };
             this.filters.insert(name, existence);
@@ -527,6 +551,7 @@ pub struct AccountsFilterMatch<'a> {
     data_size: HashSet<String>,
     tokenkeg_owner: HashSet<String>,
     tokenkeg_delegate: HashSet<String>,
+    serum_event_queue: HashSet<String>,
 }
 
 impl<'a> AccountsFilterMatch<'a> {
@@ -538,6 +563,7 @@ impl<'a> AccountsFilterMatch<'a> {
             data_size: Default::default(),
             tokenkeg_owner: Default::default(),
             tokenkeg_delegate: Default::default(),
+            serum_event_queue: Default::default(),
         }
     }
 
@@ -547,6 +573,7 @@ impl<'a> AccountsFilterMatch<'a> {
         self.data_size = Default::default();
         self.tokenkeg_owner = Default::default();
         self.tokenkeg_delegate = Default::default();
+        self.serum_event_queue = Default::default();
     }
 
     pub fn contains_tokenkeg_owner(&self, owner: &Pubkey) -> bool {
@@ -614,6 +641,25 @@ impl<'a> AccountsFilterMatch<'a> {
         )
     }
 
+    pub fn match_serum_event_queue(&mut self, pubkey: &Pubkey, data: &[u8]) -> bool {
+        let mut vec = vec![];
+        for ((key, events), name) in self.accounts_filter.serum_event_queue.iter() {
+            if key == pubkey {
+                vec.push((events, name));
+            }
+        }
+        if vec.is_empty() {
+            return false;
+        }
+
+        let matched = serum::match_events(data, &vec);
+        let found = !matched.is_empty();
+        for name in matched {
+            self.serum_event_queue.insert(name);
+        }
+        found
+    }
+
     pub fn get_filters(&self) -> Vec<String> {
         self.accounts_filter
             .filters
@@ -643,6 +689,11 @@ impl<'a> AccountsFilterMatch<'a> {
                 }
                 if af.tokenkeg_delegate_required.contains_key(name)
                     && !self.tokenkeg_delegate.contains(name)
+                {
+                    return None;
+                }
+                if af.serum_event_queue_required.contains_key(name)
+                    && !self.serum_event_queue.contains(name)
                 {
                     return None;
                 }
