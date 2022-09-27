@@ -648,6 +648,9 @@ impl<'a> AccountsFilterMatch<'a> {
                 vec.push((events, name));
             }
         }
+        if vec.is_empty() {
+            return false;
+        }
 
         let matched = serum::match_events(data, &vec);
         let found = !matched.is_empty();

@@ -2,7 +2,8 @@ use {
     enumflags2::BitFlags,
     safe_transmute::transmute_one_pedantic,
     serum_dex::state::{
-        Event, EventQueueHeader, QueueHeader, ACCOUNT_HEAD_PADDING, ACCOUNT_TAIL_PADDING,
+        AccountFlag, Event, EventQueueHeader, QueueHeader, ACCOUNT_HEAD_PADDING,
+        ACCOUNT_TAIL_PADDING,
     },
     std::{collections::HashSet, mem::size_of, str::FromStr},
 };
@@ -55,6 +56,20 @@ pub fn match_events(
         None => return vec![],
     };
 
+    // Check `account_flags` in `EventQueueHeader`, should be: Initialized, EventQueue
+    if data.len() < size_of::<EventQueueHeader>() {
+        return vec![];
+    }
+    let mut flags = [0u8; 8];
+    flags.clone_from_slice(&data[0..8]);
+    if u64::from_le_bytes(flags)
+        != (BitFlags::<AccountFlag>::from_flag(AccountFlag::Initialized)
+            | BitFlags::<AccountFlag>::from_flag(AccountFlag::EventQueue))
+        .bits()
+    {
+        return vec![];
+    }
+
     // Get `head` and `count` from header
     let (header, events) = data.split_at(size_of::<EventQueueHeader>());
     let (head, count) = match transmute_one_pedantic::<EventQueueHeader>(header) {
@@ -63,7 +78,11 @@ pub fn match_events(
     };
 
     // Remove extra bytes from events
-    let events = &events[0..(events.len() - events.len() % size_of::<Event>())];
+    let up_to = events.len() - events.len() % size_of::<Event>();
+    if up_to < head * size_of::<Event>() {
+        return vec![];
+    }
+    let events = &events[0..up_to];
 
     // Calculate number of events at head and tail
     let (tail_seg, head_seg) = events.split_at(head * size_of::<Event>());
