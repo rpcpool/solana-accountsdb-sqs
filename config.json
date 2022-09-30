@@ -33,9 +33,11 @@
         "enabled": false
     },
     "accounts": {
-        "m2-193": {
-            "owner": ["M2mx93ekt1fmXSVkTrUL9xVFHkmME8HTUi5Cyc5aF7K"],
-            "data_size": [193]
+        "magic-eden-2": {
+            "owner": ["M2mx93ekt1fmXSVkTrUL9xVFHkmME8HTUi5Cyc5aF7K"]
+        },
+        "hyperspace": {
+            "owner": ["HYPERfwdTjyJ2SCaKHmpF2MtrXqWxrsotYDsTrshHWq8"]
         }
     },
     "transactions": {
