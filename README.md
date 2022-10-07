@@ -227,6 +227,10 @@ Message matching a transaction filter:
 }
 ```
 
+### FIFO Queues
+
+FIFO Queues are supported but you need to enable `ContentBasedDeduplication` for your queue. `message_group_id` will be set to `solana`.
+
 ### Message attributes
 
 Except always existed message attributes `compression` and `md5` it's possible to set custom attributes in `sqs` config key:

@@ -209,7 +209,7 @@ impl SqsClient {
 
     pub async fn send_batch(
         self,
-        entries: Vec<SendMessageBatchRequestEntry>,
+        mut entries: Vec<SendMessageBatchRequestEntry>,
         messages_type: Option<SendMessageType>,
     ) -> Vec<BatchResultErrorEntry> {
         let Self {
@@ -235,6 +235,12 @@ impl SqsClient {
 
         let result = match queue_url {
             Some(queue_url) => {
+                if queue_url.ends_with(".fifo") {
+                    for entry in entries.iter_mut() {
+                        entry.message_group_id = Some("solana".to_owned());
+                    }
+                }
+
                 UPLOAD_SQS_REQUESTS.inc();
                 let result = with_retries("sqs", ExponentialBackoff::default(), || {
                     let input = SendMessageBatchRequest {
