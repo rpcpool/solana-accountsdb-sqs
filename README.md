@@ -149,6 +149,7 @@ Filter accounts with size 256:
 {
     "transactions": {
         "all-txs": {
+            "logs": true,
             "vote": false,
             "failed": false,
             "accounts": {
@@ -159,6 +160,19 @@ Filter accounts with size 256:
     }
 }
 ```
+
+It's possible to log filter names to redis for transactions which were sent to redis.
+
+```json
+        "redis_logs": {
+            "url": "redis://127.0.0.1:6379/1",
+            "map_key": "transactions-%Y-%m-%d-%H-%M",
+            "batch_size": 10,
+            "concurrency": 50
+        },
+```
+
+`map_key` value will be evaluated with `strftime` modifiers: https://docs.rs/chrono/latest/chrono/format/strftime/
 
 ### Sample SQS messages
 
