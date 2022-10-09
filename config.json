@@ -44,6 +44,12 @@
         "accounts_data_compression": {"algo": "none"}
     },
     "filters": {
+        "redis_logs": {
+            "url": "redis://127.0.0.1:6379/1",
+            "map_key": "transactions-%Y-%m-%d-%H-%M",
+            "batch_size": 10,
+            "concurrency": 50
+        },
         "slots": {
             "enabled": false
         },
@@ -65,6 +71,7 @@
         },
         "transactions": {
             "example": {
+                "logs": true,
                 "vote": false,
                 "failed": false,
                 "accounts": {
