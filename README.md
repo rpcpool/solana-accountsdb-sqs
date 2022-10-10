@@ -161,7 +161,7 @@ Filter accounts with size 256:
 }
 ```
 
-It's possible to log filter names to redis for transactions which were sent to redis.
+It's possible to log filter names to redis for transactions which were sent to SQS.
 
 ```json
         "redis_logs": {
@@ -173,6 +173,8 @@ It's possible to log filter names to redis for transactions which were sent to r
 ```
 
 `map_key` value will be evaluated with `strftime` modifiers: https://docs.rs/chrono/latest/chrono/format/strftime/
+
+There is not any auto cleaner process, so you need to clean redis yourself.
 
 ### Sample SQS messages
 
