@@ -292,6 +292,7 @@ impl ConfigFilters {
             Self::load_pubkeys2(&mut filter.owner, connection).await?;
             Self::load_pubkeys2(&mut filter.tokenkeg_owner, connection).await?;
             Self::load_pubkeys2(&mut filter.tokenkeg_delegate, connection).await?;
+            Self::load_pubkeys2(&mut filter.serum_event_queue.accounts, connection).await?;
         }
         for filter in self.transactions.values_mut() {
             Self::load_pubkeys2(&mut filter.accounts.include, connection).await?;
@@ -322,6 +323,7 @@ impl ConfigFilters {
             Self::save_pubkeys2(&filter.owner, pipe)?;
             Self::save_pubkeys2(&filter.tokenkeg_owner, pipe)?;
             Self::save_pubkeys2(&filter.tokenkeg_delegate, pipe)?;
+            Self::save_pubkeys2(&filter.serum_event_queue.accounts, pipe)?;
         }
         for filter in self.transactions.values() {
             Self::save_pubkeys2(&filter.accounts.include, pipe)?;
