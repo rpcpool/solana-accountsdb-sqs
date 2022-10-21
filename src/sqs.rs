@@ -20,11 +20,10 @@ use {
     },
     solana_sdk::{
         clock::UnixTimestamp,
-        message::Message as TransactionMessage,
         program_pack::Pack,
         pubkey::{Pubkey, PUBKEY_BYTES},
         signature::Signature,
-        transaction::Transaction,
+        transaction::SanitizedTransaction,
     },
     solana_transaction_status::UiTransactionStatusMeta,
     spl_token::state::Account as SplTokenAccount,
@@ -140,7 +139,7 @@ impl<'a> From<(ReplicaAccountInfoVersions<'a>, u64)> for ReplicaAccountInfo {
 pub struct ReplicaTransactionInfo {
     pub signature: Signature,
     pub is_vote: bool,
-    pub transaction: Transaction,
+    pub transaction: SanitizedTransaction,
     pub meta: UiTransactionStatusMeta,
     pub slot: u64,
     pub block_time: Option<UnixTimestamp>,
@@ -194,7 +193,7 @@ impl SendMessage {
             SendMessage::Transaction(transaction) => json!({
                 "type": "transaction",
                 "signature": transaction.signature.to_string(),
-                "transaction": base64::encode(&bincode::serialize(&transaction.transaction).unwrap()),
+                "transaction": base64::encode(&bincode::serialize(&transaction.transaction.to_versioned_transaction()).unwrap()),
                 "meta": transaction.meta,
                 "slot": transaction.slot,
                 "block_time": transaction.block_time.unwrap_or_default(),
@@ -370,19 +369,10 @@ impl AwsSqsClient {
         slot: u64,
     ) -> SqsClientResult {
         let ReplicaTransactionInfoVersions::V0_0_1(transaction) = transaction;
-        let message = transaction.transaction.message();
         self.send_message(Message::NotifyTransaction(ReplicaTransactionInfo {
             signature: *transaction.signature,
             is_vote: transaction.is_vote,
-            transaction: Transaction {
-                signatures: transaction.transaction.signatures().into(),
-                message: TransactionMessage {
-                    header: message.header().clone(),
-                    account_keys: message.account_keys().iter().cloned().collect(),
-                    recent_blockhash: *message.recent_blockhash(),
-                    instructions: message.instructions().to_vec(),
-                },
-            },
+            transaction: transaction.transaction.clone(),
             meta: transaction.transaction_status_meta.clone().into(),
             slot,
             block_time: None,

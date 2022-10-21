@@ -204,7 +204,7 @@ impl TransactionsFilter {
 
     fn contains_program(&self, transaction: &ReplicaTransactionInfo) -> bool {
         let ConfigTransactionsAccountsFilter { include, exclude } = &self.filter.accounts;
-        let mut iter = transaction.transaction.message.account_keys.iter();
+        let mut iter = transaction.transaction.message().account_keys().iter();
 
         if !include.is_empty() {
             return iter.any(|account_pubkey| include.contains(account_pubkey));
