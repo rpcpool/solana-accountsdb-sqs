@@ -826,7 +826,7 @@ impl TransactionsFilter {
         filter: &TransactionsFilterInner,
         transaction: &ReplicaTransactionInfo,
     ) -> bool {
-        let mut iter = transaction.transaction.message.account_keys.iter();
+        let mut iter = transaction.transaction.message().account_keys().iter();
 
         if !filter.accounts_include.is_empty() {
             return iter.any(|account_pubkey| filter.accounts_include.contains(account_pubkey));
