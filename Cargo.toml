@@ -41,7 +41,7 @@ solana-geyser-plugin-interface = "=1.13.3"
 solana-logger = "=1.13.3"
 solana-sdk = "=1.13.3"
 solana-transaction-status = "=1.13.3"
-spl-token = "3.3.1"
+spl-token = "3.5.0"
 thiserror = "1.0.30"
 tokio = { version = "1.15.0", features = ["rt-multi-thread", "time", "macros", "io-util"] }
 zstd = "0.11.1"

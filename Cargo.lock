@@ -2619,7 +2619,7 @@ dependencies = [
 
 [[package]]
 name = "solana-geyser-plugin-interface"
-version = "1.10.40"
+version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "45a7bdd4632ed44c3558b8612fb5120153cb153ecbb68b96b8f33aa82c575e0b"
 dependencies = [
@@ -2677,7 +2677,7 @@ dependencies = [
 
 [[package]]
 name = "solana-logger"
-version = "1.10.40"
+version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bce49c9d9c26f3547709ad5f83d7e3b3fbd439b1581ad8909402f0261cdf2b92"
 dependencies = [
@@ -2778,7 +2778,7 @@ dependencies = [
 
 [[package]]
 name = "solana-sdk"
-version = "1.10.40"
+version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2c32d8b3b0c44c7f7add3ca878822871fb62184fb6bd9a2b62ba634d8d1c83bf"
 dependencies = [
@@ -2842,7 +2842,7 @@ dependencies = [
 
 [[package]]
 name = "solana-transaction-status"
-version = "1.10.40"
+version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "395c37189573fe1852101f1a3398b41dd2583a50aaba233e2e0fe98f72950807"
 dependencies = [
