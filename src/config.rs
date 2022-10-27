@@ -236,7 +236,7 @@ pub enum AccountsDataCompression {
     #[derivative(Default)]
     None,
     Zstd {
-        #[serde(default)]
+        #[serde(default = "AccountsDataCompression::zstd_default_level")]
         level: i32,
     },
     Gzip {
@@ -246,6 +246,10 @@ pub enum AccountsDataCompression {
 }
 
 impl AccountsDataCompression {
+    fn zstd_default_level() -> i32 {
+        zstd::DEFAULT_COMPRESSION_LEVEL
+    }
+
     fn gzip_default_level() -> u32 {
         GzCompression::default().level()
     }
