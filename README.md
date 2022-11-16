@@ -300,7 +300,7 @@ It's also possible to reload filters without re-starting solana-validator.
 
 You can check CLI-tool for this: `cargo run --bin config -- --help`.
 
-Plugin will load config from Redis on startup, `config` key in current example, `slots`/`accounts`/`transactions` in json file will be overwritten. Config format in Redis is same as in `json` file.
+Plugin will load config from Redis on startup, `config` key from Redis in current example (value should be stored as `String`), `slots`/`accounts`/`transactions` from json file will be overwritten. Config format in Redis is same as in `filters` section in JSON config file.
 
 Each time when config need to be reloaded these data should be published to the channel (`admin` in current example): `{"id":0,"method":"global"}`. As response you will get: `{"node":"my-unique-node-name","id":0,"result":"ok"}`.
 
