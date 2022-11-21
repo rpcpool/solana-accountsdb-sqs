@@ -5,18 +5,20 @@ use {
             ConfigMgmtMsgFilterAccounts, ConfigMgmtMsgFilterTransactions, ConfigMgmtMsgRequest,
         },
         config::{
-            ConfigAccountsFilter, ConfigFilters, ConfigRedis, ConfigSlotsFilter,
-            ConfigTransactionsFilter,
+            ConfigAccountsFilter, ConfigFilters, ConfigFiltersRedisLogs, ConfigRedis,
+            ConfigSlotsFilter, ConfigTransactionsFilter,
         },
         prom::health::{set_health, HealthInfoType},
         serum::{self, EventFlag},
         sqs::{ReplicaAccountInfo, ReplicaTransactionInfo},
         version::VERSION,
     },
+    chrono::offset::Utc,
     enumflags2::BitFlags,
-    futures::stream::StreamExt,
+    futures::{future::TryFutureExt, stream::StreamExt},
     log::*,
-    solana_sdk::{program_pack::Pack, pubkey::Pubkey},
+    redis::{Cmd, RedisError},
+    solana_sdk::{program_pack::Pack, pubkey::Pubkey, signature::Signature},
     spl_token::state::Account as SplTokenAccount,
     std::{
         collections::{HashMap, HashSet},
@@ -25,8 +27,8 @@ use {
     },
     thiserror::Error,
     tokio::{
-        sync::{oneshot, MappedMutexGuard, Mutex, MutexGuard},
-        time::{sleep, Duration},
+        sync::{mpsc, oneshot, MappedMutexGuard, Mutex, MutexGuard, Semaphore},
+        time::{error::Elapsed as ElapsedError, sleep, timeout, Duration},
     },
 };
 
@@ -34,6 +36,10 @@ use {
 pub enum FiltersError {
     #[error("config management error: {0}")]
     Admin(#[from] AdminError),
+    #[error("redis error: {0}")]
+    Redis(#[from] RedisError),
+    #[error("redis timeout: {0}")]
+    RedisTimeout(#[from] ElapsedError),
 }
 
 pub type FiltersResult<T = ()> = Result<T, FiltersError>;
@@ -46,19 +52,19 @@ pub struct FiltersInner {
 }
 
 impl FiltersInner {
-    fn new(config: ConfigFilters) -> Self {
-        Self {
+    async fn new(config: ConfigFilters) -> FiltersResult<Self> {
+        Ok(Self {
             slots: config.slots,
             accounts: AccountsFilter::new(config.accounts),
-            transactions: TransactionsFilter::new(config.transactions),
-        }
+            transactions: TransactionsFilter::new(config.transactions, config.redis_logs).await?,
+        })
     }
 }
 
 #[derive(Debug)]
 pub struct Filters {
     inner: Arc<Mutex<FiltersInner>>,
-    shutdown: oneshot::Sender<()>,
+    shutdown: Mutex<Option<oneshot::Sender<()>>>,
 }
 
 impl Filters {
@@ -77,7 +83,7 @@ impl Filters {
             None => None,
         };
 
-        let inner = Arc::new(Mutex::new(FiltersInner::new(config)));
+        let inner = Arc::new(Mutex::new(FiltersInner::new(config).await?));
         if logs {
             info!("Filters: {:?}", inner);
         }
@@ -95,7 +101,7 @@ impl Filters {
 
         Ok(Self {
             inner,
-            shutdown: send,
+            shutdown: Mutex::new(Some(send)),
         })
     }
 
@@ -147,9 +153,13 @@ impl Filters {
             .await;
 
             // Update global config from Redis
-            let (result, error) = match admin.get_global_config().await {
-                Ok(config) => {
-                    let new_inner = FiltersInner::new(config);
+            let (result, error) = match admin
+                .get_global_config()
+                .map_err(Into::into)
+                .and_then(FiltersInner::new)
+                .await
+            {
+                Ok(new_inner) => {
                     let mut locked = inner.lock().await;
                     *locked = new_inner;
                     set_health(HealthInfoType::RedisAdmin, Ok(()));
@@ -205,10 +215,13 @@ impl Filters {
                                 }).await;
                             }
                             Some(ConfigMgmtMsg::Request { node, id, action: ConfigMgmtMsgRequest::Global }) => if node.is_none() || node.as_deref() == Some(this_node.as_str()) {
-                                let updated = match admin.get_global_config().await {
-                                    Ok(config) => {
-                                        let new_inner = FiltersInner::new(config);
-
+                                let updated = match admin
+                                    .get_global_config()
+                                    .map_err(Into::into)
+                                    .and_then(FiltersInner::new)
+                                    .await
+                                {
+                                    Ok(new_inner) => {
                                         let mut locked = inner.lock().await;
                                         *locked = new_inner;
                                         if logs {
@@ -290,8 +303,11 @@ impl Filters {
         }
     }
 
-    pub fn shutdown(self) {
-        let _ = self.shutdown.send(());
+    pub async fn shutdown(this: Arc<Self>) {
+        let mut locked = this.shutdown.lock().await;
+        if let Some(shutdown) = locked.take() {
+            let _ = shutdown.send(());
+        }
     }
 
     pub async fn is_slot_messages_enabled(&self) -> bool {
@@ -310,6 +326,11 @@ impl Filters {
     ) -> Vec<String> {
         let inner = self.inner.lock().await;
         inner.transactions.get_filters(transaction)
+    }
+
+    pub async fn log_transaction(&self, entries: Vec<(ReplicaTransactionInfo, Vec<String>)>) {
+        let inner = self.inner.lock().await;
+        inner.transactions.log_transaction(entries);
     }
 }
 
@@ -706,27 +727,44 @@ impl<'a> AccountsFilterMatch<'a> {
 
 #[derive(Debug, Clone)]
 struct TransactionsFilterInner {
+    logs: bool,
     vote: bool,
     failed: bool,
     accounts_include: HashSet<Pubkey>,
     accounts_exclude: HashSet<Pubkey>,
 }
 
+#[derive(Debug)]
+struct TransactionLogMessage {
+    signature: Signature,
+    filters: Vec<String>,
+}
+
 // TODO: optimize filter (like accounts filter)
 #[derive(Debug, Clone)]
 struct TransactionsFilter {
     filters: HashMap<String, TransactionsFilterInner>,
+    logs_tx: Option<mpsc::UnboundedSender<TransactionLogMessage>>,
 }
 
 impl TransactionsFilter {
-    fn new(filters: HashMap<String, ConfigTransactionsFilter>) -> Self {
-        Self {
+    async fn new(
+        filters: HashMap<String, ConfigTransactionsFilter>,
+        redis_logs: Option<ConfigFiltersRedisLogs>,
+    ) -> FiltersResult<Self> {
+        let logs_tx = match redis_logs {
+            Some(config) => Some(Self::run_redis_loop(config).await?),
+            None => None,
+        };
+
+        Ok(Self {
             filters: filters
                 .into_iter()
                 .map(|(name, filter)| {
                     (
                         name,
                         TransactionsFilterInner {
+                            logs: filter.logs,
                             vote: filter.vote,
                             failed: filter.failed,
                             accounts_include: filter
@@ -745,7 +783,8 @@ impl TransactionsFilter {
                     )
                 })
                 .collect(),
-        }
+            logs_tx,
+        })
     }
 
     fn change_pubkeys(
@@ -799,6 +838,89 @@ impl TransactionsFilter {
         }
 
         Ok(())
+    }
+
+    async fn run_redis_loop(
+        config: ConfigFiltersRedisLogs,
+    ) -> FiltersResult<mpsc::UnboundedSender<TransactionLogMessage>> {
+        let connection = timeout(
+            Duration::from_secs(10),
+            config.url.get_multiplexed_async_connection(),
+        )
+        .await??;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let jobs = Arc::new(Semaphore::new(config.concurrency));
+            loop {
+                let mut messages: Vec<TransactionLogMessage> =
+                    Vec::with_capacity(config.batch_size);
+                messages.push(match rx.recv().await {
+                    Some(message) => message,
+                    None => break,
+                });
+
+                while messages.len() < messages.capacity() {
+                    match timeout(Duration::from_millis(1), rx.recv()).await {
+                        Ok(Some(message)) => messages.push(message),
+                        Ok(None) => break,
+                        Err(_error) => break,
+                    }
+                }
+
+                let lock = Arc::clone(&jobs).acquire_owned().await;
+                let mut connection = connection.clone();
+                let key = Utc::now().format(&config.map_key).to_string();
+                tokio::spawn(async move {
+                    let count = messages.len();
+
+                    let mut cmd = Cmd::new();
+                    cmd.arg("HSET").arg(key);
+                    for message in messages {
+                        cmd.arg(message.signature.to_string());
+                        cmd.arg(serde_json::to_string(&message.filters).unwrap());
+                    }
+                    match cmd.query_async::<_, usize>(&mut connection).await {
+                        Ok(value) => {
+                            if value != count {
+                                warn!(
+                                    "failed to save all transactions logs, saved: {}, expected: {}",
+                                    value, count
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            warn!("failed to save transactions logs: {:?}", error);
+                        }
+                    }
+
+                    drop(lock);
+                });
+            }
+        });
+
+        Ok(tx)
+    }
+
+    pub fn log_transaction(&self, entries: Vec<(ReplicaTransactionInfo, Vec<String>)>) {
+        if let Some(tx) = &self.logs_tx {
+            for (ReplicaTransactionInfo { signature, .. }, filters) in entries {
+                let filters = filters
+                    .into_iter()
+                    .filter(|name| {
+                        self.filters
+                            .get(name)
+                            .map(|filter| filter.logs)
+                            .unwrap_or_else(|| false)
+                    })
+                    .collect::<Vec<_>>();
+                if !filters.is_empty() {
+                    if let Err(error) = tx.send(TransactionLogMessage { signature, filters }) {
+                        warn!("failed to log transaction to redis: {:?}", error);
+                    }
+                }
+            }
+        }
     }
 
     pub fn get_filters(&self, transaction: &ReplicaTransactionInfo) -> Vec<String> {

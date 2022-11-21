@@ -474,13 +474,15 @@ impl AwsSqsClient {
         let accounts_data_compression = config.messages.accounts_data_compression;
         let sqs = SqsClient::new(config.sqs, &config.node)?;
         let s3 = S3Client::new(config.s3)?;
-        let filters = Filters::new(
-            config.filters,
-            config.redis,
-            config.node,
-            config.log.filters,
-        )
-        .await?;
+        let filters = Arc::new(
+            Filters::new(
+                config.filters,
+                config.redis,
+                config.node,
+                config.log.filters,
+            )
+            .await?,
+        );
 
         // Save required Tokenkeg Accounts
         let mut tokenkeg_owner_accounts: HashMap<Pubkey, ReplicaAccountInfo> = HashMap::new();
@@ -509,7 +511,7 @@ impl AwsSqsClient {
                 }
                 Message::Shutdown => {
                     drop(accounts_filter);
-                    filters.shutdown();
+                    Filters::shutdown(filters).await;
                     send_job.store(false, Ordering::Relaxed);
                     return Ok(());
                 }
@@ -769,12 +771,13 @@ impl AwsSqsClient {
                 }
                 if !messages_batch.is_empty() {
                     UPLOAD_QUEUE_SIZE.sub(messages_batch.len() as i64);
+                    let filters = Arc::clone(&filters);
                     let sqs = sqs.clone();
                     let s3 = s3.clone();
                     let send_jobs = Arc::clone(&send_jobs);
                     let send_permit = send_jobs.try_acquire_owned().expect("available permit");
                     tokio::spawn(async move {
-                        Self::send_messages(sqs, s3, messages_batch, messages_type).await;
+                        Self::send_messages(filters, sqs, s3, messages_batch, messages_type).await;
                         drop(send_permit);
                     });
                 }
@@ -851,7 +854,7 @@ impl AwsSqsClient {
             .acquire_many(sqs_max_requests.try_into().expect("valid size"))
             .await
             .expect("alive");
-        filters.shutdown();
+        Filters::shutdown(filters).await;
         send_job.store(false, Ordering::Relaxed);
         info!("update_loop finished");
 
@@ -859,6 +862,7 @@ impl AwsSqsClient {
     }
 
     async fn send_messages(
+        filters: Arc<Filters>,
         sqs: SqsClient,
         s3: S3Client,
         messages: Vec<SendMessageWithPayload>,
@@ -868,7 +872,7 @@ impl AwsSqsClient {
         let mut failed_count = 0;
 
         let messages_initial_count = messages.len();
-        let (messages, entries): (Vec<SendMessage>, Vec<_>) =
+        let (mut messages, entries): (Vec<Option<SendMessage>>, Vec<_>) =
             stream::iter(messages.into_iter().enumerate())
                 .filter_map(|(id, message)| {
                     let s3 = if message.s3 { Some(s3.clone()) } else { None };
@@ -900,7 +904,7 @@ impl AwsSqsClient {
                         attributes.insert("md5", message.md5);
                         attributes.insert("compression", message.compression);
                         Some((
-                            message.message,
+                            Some(message.message),
                             SendMessageBatchRequestEntry {
                                 id: id.to_string(),
                                 message_body,
@@ -919,17 +923,30 @@ impl AwsSqsClient {
         failed_count += failed.len();
         for entry in failed {
             let index = entry.id.parse::<usize>().ok();
-            if let Some(message) = index.and_then(|index| messages.get(index)) {
-                let value = message.update_info(json!({
-                    "code": entry.code,
-                    "message": entry.message,
-                    "sender_fault": entry.sender_fault,
-                }));
-                error!(
-                    "failed to send sqs message: {:?}",
-                    serde_json::to_string(&value)
-                );
+            if let Some(message) = index.and_then(|index| messages.get_mut(index)) {
+                if let Some(message) = message {
+                    let value = message.update_info(json!({
+                        "code": entry.code,
+                        "message": entry.message,
+                        "sender_fault": entry.sender_fault,
+                    }));
+                    error!(
+                        "failed to send sqs message: {:?}",
+                        serde_json::to_string(&value)
+                    );
+                }
+                *message = None;
             }
+        }
+        let entries = messages
+            .into_iter()
+            .filter_map(|message| match message {
+                Some(SendMessage::Transaction((tx, names))) => Some((tx, names)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if !entries.is_empty() {
+            filters.log_transaction(entries).await;
         }
 
         for (status, count) in [

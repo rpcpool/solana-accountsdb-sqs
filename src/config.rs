@@ -281,6 +281,7 @@ impl AccountsDataCompression {
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ConfigFilters {
+    pub redis_logs: Option<ConfigFiltersRedisLogs>,
     pub slots: ConfigSlotsFilter,
     pub accounts: HashMap<String, ConfigAccountsFilter>,
     pub transactions: HashMap<String, ConfigTransactionsFilter>,
@@ -362,6 +363,28 @@ where
 {
     String::deserialize(deserializer)
         .and_then(|params| RedisClient::open(params).map_err(de::Error::custom))
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigFiltersRedisLogs {
+    #[serde(deserialize_with = "deserialize_redis_client", skip_serializing)]
+    pub url: RedisClient,
+    pub map_key: String,
+    #[serde(default = "ConfigFiltersRedisLogs::default_batch_size")]
+    pub batch_size: usize,
+    #[serde(default = "ConfigFiltersRedisLogs::default_concurrency")]
+    pub concurrency: usize,
+}
+
+impl ConfigFiltersRedisLogs {
+    const fn default_batch_size() -> usize {
+        10
+    }
+
+    const fn default_concurrency() -> usize {
+        50
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, Deserialize, Serialize)]
@@ -558,6 +581,7 @@ where
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ConfigTransactionsFilter {
+    pub logs: bool,
     pub vote: bool,
     pub failed: bool,
     pub accounts: ConfigTransactionsAccountsFilter,

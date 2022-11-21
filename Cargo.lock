@@ -2716,6 +2716,7 @@ dependencies = [
  "base64 0.13.1",
  "bincode",
  "cargo-lock",
+ "chrono",
  "clap",
  "derivative",
  "enumflags2",
