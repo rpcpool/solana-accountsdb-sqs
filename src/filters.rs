@@ -6,7 +6,8 @@ use {
         },
         config::{
             ConfigAccountsFilter, ConfigFilters, ConfigFiltersRedisLogs, ConfigRedis,
-            ConfigSlotsFilter, ConfigTransactionsFilter,
+            ConfigSlotsFilter, ConfigTransactionsAccountsFilter, ConfigTransactionsFilter,
+            PubkeyWithSource,
         },
         prom::health::{set_health, HealthInfoType},
         serum::{self, EventFlag},
@@ -46,6 +47,7 @@ pub type FiltersResult<T = ()> = Result<T, FiltersError>;
 
 #[derive(Debug)]
 pub struct FiltersInner {
+    redis_logs: Option<ConfigFiltersRedisLogs>,
     slots: ConfigSlotsFilter,
     accounts: AccountsFilter,
     transactions: TransactionsFilter,
@@ -54,10 +56,20 @@ pub struct FiltersInner {
 impl FiltersInner {
     async fn new(config: ConfigFilters) -> FiltersResult<Self> {
         Ok(Self {
+            redis_logs: config.redis_logs.clone(),
             slots: config.slots,
             accounts: AccountsFilter::new(config.accounts),
             transactions: TransactionsFilter::new(config.transactions, config.redis_logs).await?,
         })
+    }
+
+    fn get_config(&self) -> ConfigFilters {
+        ConfigFilters {
+            redis_logs: self.redis_logs.clone(),
+            slots: self.slots,
+            accounts: self.accounts.get_config(),
+            transactions: self.transactions.get_config(),
+        }
     }
 }
 
@@ -240,6 +252,25 @@ impl Filters {
                                             error!("{}", error);
                                         }
                                         (None, Some(error))
+                                    }
+                                };
+
+                                send_message(&mut admin, &ConfigMgmtMsg::Response {
+                                    node: this_node.clone(),
+                                    id: Some(id),
+                                    result,
+                                    error,
+                                }).await;
+                            }
+                            Some(ConfigMgmtMsg::Request { node, id, action: ConfigMgmtMsgRequest::GetConfig }) => if node.is_none() || node.as_deref() == Some(this_node.as_str()) {
+                                let locked = inner.lock().await;
+                                let (result, error) = match serde_json::to_string(&locked.get_config()) {
+                                    Ok(config) => (Some(config), None),
+                                    Err(error) => {
+                                        if logs {
+                                            error!("{}", error);
+                                        }
+                                        (None, Some(error.to_string()))
                                     }
                                 };
 
@@ -438,6 +469,55 @@ impl AccountsFilter {
             this.filters.insert(name, existence);
         }
         this
+    }
+
+    fn get_config(&self) -> HashMap<String, ConfigAccountsFilter> {
+        let mut filters: HashMap<String, ConfigAccountsFilter> = HashMap::new();
+
+        for (key, names) in &self.account {
+            for name in names {
+                let entry = filters.entry(name.clone()).or_default();
+                entry.account.insert(PubkeyWithSource::Pubkey(*key));
+            }
+        }
+        for (key, names) in &self.owner {
+            for name in names {
+                let entry = filters.entry(name.clone()).or_default();
+                entry.owner.insert(PubkeyWithSource::Pubkey(*key));
+            }
+        }
+        for (size, names) in &self.data_size {
+            for name in names {
+                let entry = filters.entry(name.clone()).or_default();
+                entry.data_size.insert(*size);
+            }
+        }
+        for (key, names) in &self.tokenkeg_owner {
+            for name in names {
+                let entry = filters.entry(name.clone()).or_default();
+                entry.tokenkeg_owner.insert(PubkeyWithSource::Pubkey(*key));
+            }
+        }
+        for (key, names) in &self.tokenkeg_delegate {
+            for name in names {
+                let entry = filters.entry(name.clone()).or_default();
+                entry
+                    .tokenkeg_delegate
+                    .insert(PubkeyWithSource::Pubkey(*key));
+            }
+        }
+        for ((key, events), names) in &self.serum_event_queue {
+            for name in names {
+                let entry = filters.entry(name.clone()).or_default();
+                entry
+                    .serum_event_queue
+                    .accounts
+                    .insert(PubkeyWithSource::Pubkey(*key));
+                entry.serum_event_queue.events = events.iter().copied().collect();
+            }
+        }
+
+        filters
     }
 
     fn set<Q, I>(
@@ -785,6 +865,36 @@ impl TransactionsFilter {
                 .collect(),
             logs_tx,
         })
+    }
+
+    fn get_config(&self) -> HashMap<String, ConfigTransactionsFilter> {
+        self.filters
+            .iter()
+            .map(|(name, filter)| {
+                (
+                    name.clone(),
+                    ConfigTransactionsFilter {
+                        logs: filter.logs,
+                        vote: filter.vote,
+                        failed: filter.failed,
+                        accounts: ConfigTransactionsAccountsFilter {
+                            include: filter
+                                .accounts_include
+                                .iter()
+                                .copied()
+                                .map(PubkeyWithSource::Pubkey)
+                                .collect(),
+                            exclude: filter
+                                .accounts_exclude
+                                .iter()
+                                .copied()
+                                .map(PubkeyWithSource::Pubkey)
+                                .collect(),
+                        },
+                    },
+                )
+            })
+            .collect()
     }
 
     fn change_pubkeys(

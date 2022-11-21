@@ -8,8 +8,7 @@ use {
     enumflags2::BitFlags,
     flate2::{write::GzEncoder, Compression as GzCompression},
     redis::{
-        aio::Connection as RedisConnection, AsyncCommands, Client as RedisClient,
-        Pipeline as RedisPipeline, RedisError,
+        aio::Connection as RedisConnection, AsyncCommands, Pipeline as RedisPipeline, RedisError,
     },
     rusoto_core::Region,
     serde::{de, ser::SerializeSeq, Deserialize, Deserializer, Serialize, Serializer},
@@ -24,6 +23,7 @@ use {
         hash::{Hash, Hasher},
         io::{Result as IoResult, Write},
         net::SocketAddr,
+        ops::Deref,
         path::{Component, Path, PathBuf},
     },
     thiserror::Error,
@@ -351,24 +351,48 @@ impl ConfigFilters {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigRedis {
-    #[serde(deserialize_with = "deserialize_redis_client", skip_serializing)]
     pub url: RedisClient,
     pub channel: String,
     pub config: String,
 }
 
-fn deserialize_redis_client<'de, D>(deserializer: D) -> Result<RedisClient, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    String::deserialize(deserializer)
-        .and_then(|params| RedisClient::open(params).map_err(de::Error::custom))
+#[derive(Debug, Clone)]
+pub struct RedisClient {
+    url: String,
+    client: redis::Client,
+}
+
+impl<'de> Deserialize<'de> for RedisClient {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let url = String::deserialize(deserializer)?;
+        let client = redis::Client::open(url.clone()).map_err(de::Error::custom)?;
+        Ok(Self { url, client })
+    }
+}
+
+impl Serialize for RedisClient {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.url)
+    }
+}
+
+impl Deref for RedisClient {
+    type Target = redis::Client;
+
+    fn deref(&self) -> &Self::Target {
+        &self.client
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigFiltersRedisLogs {
-    #[serde(deserialize_with = "deserialize_redis_client", skip_serializing)]
     pub url: RedisClient,
     pub map_key: String,
     #[serde(default = "ConfigFiltersRedisLogs::default_batch_size")]

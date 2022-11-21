@@ -10,7 +10,7 @@ use {
     },
     serde::{Deserialize, Serialize},
     solana_sdk::pubkey::Pubkey,
-    std::{fmt, future::Future, pin::Pin},
+    std::{fmt, future::Future, ops::Deref, pin::Pin},
     thiserror::Error,
     tokio::{
         sync::oneshot,
@@ -51,7 +51,7 @@ impl ConfigMgmt {
             Some(node) => {
                 let (send, recv) = oneshot::channel();
                 tokio::spawn(Self::heartbeat_loop(
-                    config.url.clone(),
+                    config.url.deref().clone(),
                     recv,
                     config.channel.clone(),
                     node,
@@ -215,6 +215,7 @@ pub enum ConfigMgmtMsgRequest {
     Ping,
     Version,
     Global,
+    GetConfig,
     PubkeysSet {
         filter: ConfigMgmtMsgFilter,
         action: ConfigMgmtMsgAction,
