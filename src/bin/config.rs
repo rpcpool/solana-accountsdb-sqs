@@ -191,6 +191,8 @@ pub enum ArgsActionSendSignal {
     Version,
     /// Reload whole config
     Global,
+    /// Fetch currently used config
+    GetConfig,
     /// Add or remove Public Key
     PubkeysSet {
         /// Filter type: `accounts`, `transactions`
@@ -419,6 +421,7 @@ async fn main() -> Result<()> {
                 },
                 ArgsActionSendSignal::Version => ConfigMgmtMsgRequest::Version,
                 ArgsActionSendSignal::Global => ConfigMgmtMsgRequest::Global,
+                ArgsActionSendSignal::GetConfig => ConfigMgmtMsgRequest::GetConfig,
                 ArgsActionSendSignal::PubkeysSet {
                     filter,
                     name,
