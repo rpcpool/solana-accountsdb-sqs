@@ -90,6 +90,7 @@ pub struct ReplicaAccountInfo {
     pub data: Vec<u8>,
     pub write_version: u64,
     pub slot: u64,
+    pub txn_signature: Option<Signature>,
 }
 
 impl ReplicaAccountInfo {
@@ -145,7 +146,22 @@ impl<'a> From<(ReplicaAccountInfoVersions<'a>, u64)> for ReplicaAccountInfo {
                 data: account.data.into(),
                 write_version: account.write_version,
                 slot,
+                txn_signature: None,
             },
+            ReplicaAccountInfoVersions::V0_0_2(account) => Self {
+                pubkey: Pubkey::new(account.pubkey),
+                lamports: account.lamports,
+                owner: Pubkey::new(account.owner),
+                executable: account.executable,
+                rent_epoch: account.rent_epoch,
+                data: account.data.into(),
+                write_version: account.write_version,
+                slot,
+                txn_signature: match account.txn_signature {
+                    None => None,
+                    Some(a) => Some(a.clone())
+                }
+            }
         }
     }
 }
@@ -158,6 +174,34 @@ pub struct ReplicaTransactionInfo {
     pub meta: UiTransactionStatusMeta,
     pub slot: u64,
     pub block_time: Option<UnixTimestamp>,
+    pub index: usize,
+}
+
+
+impl<'a> From<(ReplicaTransactionInfoVersions<'a>, u64)> for ReplicaTransactionInfo {
+    fn from((transaction,slot): (ReplicaTransactionInfoVersions<'a>, u64)) -> Self {
+        match transaction {
+            ReplicaTransactionInfoVersions::V0_0_1(transaction) => Self {
+                signature: *transaction.signature,
+                is_vote: transaction.is_vote,
+                transaction: transaction.transaction.clone(),
+                meta: transaction.transaction_status_meta.clone().into(),
+                slot,
+                block_time: None,
+                index: 0,
+            },
+            ReplicaTransactionInfoVersions::V0_0_2(transaction) => Self {
+                signature: *transaction.signature,
+                is_vote: transaction.is_vote,
+                transaction: transaction.transaction.clone(),
+                meta: transaction.transaction_status_meta.clone().into(),
+                slot,
+                block_time: None,
+                index: transaction.index,
+            },
+        }
+    }
+    
 }
 
 #[derive(Debug)]
@@ -230,6 +274,10 @@ impl SendMessage {
                     "rent_epoch": account.rent_epoch,
                     "data": base64::encode(compression.compress(&account.data)?.as_ref()),
                     "write_version": account.write_version,
+                    "txn_signature": match account.txn_signature {
+                      None => "".to_string(),
+                      Some(a) => a.to_string(),
+                    },
                     "slot": account.slot,
                 })
             }
@@ -245,6 +293,7 @@ impl SendMessage {
                     "meta": transaction.meta,
                     "slot": transaction.slot,
                     "block_time": transaction.block_time.unwrap_or_default(),
+                    "index": transaction.index,
                 })
             }
         };
@@ -444,15 +493,7 @@ impl AwsSqsClient {
         transaction: ReplicaTransactionInfoVersions,
         slot: u64,
     ) -> SqsClientResult {
-        let ReplicaTransactionInfoVersions::V0_0_1(transaction) = transaction;
-        self.send_message(Message::NotifyTransaction(ReplicaTransactionInfo {
-            signature: *transaction.signature,
-            is_vote: transaction.is_vote,
-            transaction: transaction.transaction.clone(),
-            meta: transaction.transaction_status_meta.clone().into(),
-            slot,
-            block_time: None,
-        }))
+        self.send_message(Message::NotifyTransaction((transaction,slot).into()))
     }
 
     pub fn notify_block_metadata(&self, blockinfo: ReplicaBlockInfoVersions) -> SqsClientResult {
