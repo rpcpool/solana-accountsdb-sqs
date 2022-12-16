@@ -159,9 +159,9 @@ impl<'a> From<(ReplicaAccountInfoVersions<'a>, u64)> for ReplicaAccountInfo {
                 slot,
                 txn_signature: match account.txn_signature {
                     None => None,
-                    Some(a) => Some(a.clone())
-                }
-            }
+                    Some(a) => Some(a.clone()),
+                },
+            },
         }
     }
 }
@@ -177,9 +177,8 @@ pub struct ReplicaTransactionInfo {
     pub index: usize,
 }
 
-
 impl<'a> From<(ReplicaTransactionInfoVersions<'a>, u64)> for ReplicaTransactionInfo {
-    fn from((transaction,slot): (ReplicaTransactionInfoVersions<'a>, u64)) -> Self {
+    fn from((transaction, slot): (ReplicaTransactionInfoVersions<'a>, u64)) -> Self {
         match transaction {
             ReplicaTransactionInfoVersions::V0_0_1(transaction) => Self {
                 signature: *transaction.signature,
@@ -201,7 +200,6 @@ impl<'a> From<(ReplicaTransactionInfoVersions<'a>, u64)> for ReplicaTransactionI
             },
         }
     }
-    
 }
 
 #[derive(Debug)]
@@ -493,7 +491,7 @@ impl AwsSqsClient {
         transaction: ReplicaTransactionInfoVersions,
         slot: u64,
     ) -> SqsClientResult {
-        self.send_message(Message::NotifyTransaction((transaction,slot).into()))
+        self.send_message(Message::NotifyTransaction((transaction, slot).into()))
     }
 
     pub fn notify_block_metadata(&self, blockinfo: ReplicaBlockInfoVersions) -> SqsClientResult {
