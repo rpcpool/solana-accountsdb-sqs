@@ -393,6 +393,7 @@ pub type SqsClientResult<T = ()> = Result<T, SqsClientError>;
 #[derive(Debug)]
 pub struct AwsSqsClient {
     send_queue: mpsc::UnboundedSender<Message>,
+    send_queue_error: bool,
     startup_job: Arc<AtomicBool>,
     send_job: Arc<AtomicBool>,
 }
@@ -427,18 +428,22 @@ impl AwsSqsClient {
 
         Ok(Self {
             send_queue,
+            send_queue_error: false,
             startup_job,
             send_job,
         })
     }
 
-    fn send_message(&self, message: Message) -> SqsClientResult {
-        self.send_queue
-            .send(message)
-            .map_err(|_| SqsClientError::UpdateQueueChannelClosed)
+    fn send_message(&mut self, message: Message) -> SqsClientResult {
+        if self.send_queue.send(message).is_err() && !self.send_queue_error {
+            self.send_queue_error = true;
+            Err(SqsClientError::UpdateQueueChannelClosed)
+        } else {
+            Ok(())
+        }
     }
 
-    pub async fn shutdown(self) {
+    pub async fn shutdown(mut self) {
         if self.send_message(Message::Shutdown).is_ok() {
             while self.send_job.load(Ordering::Relaxed) {
                 sleep_async(Duration::from_micros(10)).await;
@@ -446,7 +451,7 @@ impl AwsSqsClient {
         }
     }
 
-    pub fn startup_finished(&self) -> SqsClientResult {
+    pub fn startup_finished(&mut self) -> SqsClientResult {
         self.send_message(Message::StartupFinished)?;
         while self.startup_job.load(Ordering::Relaxed) {
             sleep(Duration::from_micros(10));
@@ -454,12 +459,12 @@ impl AwsSqsClient {
         Ok(())
     }
 
-    pub fn update_slot(&self, slot: u64, status: GeyserSlotStatus) -> SqsClientResult {
+    pub fn update_slot(&mut self, slot: u64, status: GeyserSlotStatus) -> SqsClientResult {
         self.send_message(Message::UpdateSlot((status.into(), slot)))
     }
 
     pub fn update_account(
-        &self,
+        &mut self,
         account: ReplicaAccountInfoVersions,
         slot: u64,
     ) -> SqsClientResult {
@@ -467,14 +472,17 @@ impl AwsSqsClient {
     }
 
     pub fn notify_transaction(
-        &self,
+        &mut self,
         transaction: ReplicaTransactionInfoVersions,
         slot: u64,
     ) -> SqsClientResult {
         self.send_message(Message::NotifyTransaction((transaction, slot).into()))
     }
 
-    pub fn notify_block_metadata(&self, blockinfo: ReplicaBlockInfoVersions) -> SqsClientResult {
+    pub fn notify_block_metadata(
+        &mut self,
+        blockinfo: ReplicaBlockInfoVersions,
+    ) -> SqsClientResult {
         let ReplicaBlockInfoVersions::V0_0_1(info) = blockinfo;
         self.send_message(Message::NotifyBlockMetadata(ReplicaBlockMetadata {
             slot: info.slot,
