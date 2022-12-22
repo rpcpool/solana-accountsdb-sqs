@@ -24,12 +24,12 @@ pub struct Plugin {
 }
 
 impl Plugin {
-    fn with_client<F>(&self, f: F) -> PluginResult<()>
+    fn with_client<F>(&mut self, f: F) -> PluginResult<()>
     where
-        F: FnOnce(&AwsSqsClient) -> SqsClientResult,
+        F: FnOnce(&mut AwsSqsClient) -> SqsClientResult,
     {
-        let inner = self.inner.as_ref().expect("initialized");
-        f(&inner.client).map_err(|error| GeyserPluginError::Custom(Box::new(error)))
+        let inner = self.inner.as_mut().expect("initialized");
+        f(&mut inner.client).map_err(|error| GeyserPluginError::Custom(Box::new(error)))
     }
 }
 
