@@ -2788,7 +2788,7 @@ dependencies = [
 
 [[package]]
 name = "solana-geyser-sqs"
-version = "0.1.1"
+version = "0.2.0+solana.1.14.10"
 dependencies = [
  "anyhow",
  "arrayref",
