@@ -411,6 +411,15 @@ impl AwsSqsClient {
 
         SqsClient::new(config.sqs.clone(), "")?.check().await?;
         S3Client::new(config.s3.clone())?.check().await?;
+        let filters = Arc::new(
+            Filters::new(
+                config.filters.clone(),
+                config.redis.clone(),
+                config.node.clone(),
+                config.log.filters,
+            )
+            .await?,
+        );
 
         let startup_job = Arc::new(AtomicBool::new(true));
         let startup_job_loop = Arc::clone(&startup_job);
@@ -420,7 +429,9 @@ impl AwsSqsClient {
         let (send_queue, rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
             set_health(HealthInfoType::SendLoop, Ok(()));
-            if let Err(error) = Self::send_loop(config, rx, startup_job_loop, send_job_loop).await {
+            if let Err(error) =
+                Self::send_loop(config, filters, rx, startup_job_loop, send_job_loop).await
+            {
                 error!("update_loop failed: {:?}", error);
             }
             set_health(HealthInfoType::SendLoop, Err(()));
@@ -492,6 +503,7 @@ impl AwsSqsClient {
 
     async fn send_loop(
         config: Config,
+        filters: Arc<Filters>,
         mut rx: mpsc::UnboundedReceiver<Message>,
         startup_job: Arc<AtomicBool>,
         send_job: Arc<AtomicBool>,
@@ -501,15 +513,6 @@ impl AwsSqsClient {
         let accounts_data_compression = config.messages.accounts_data_compression;
         let sqs = SqsClient::new(config.sqs, &config.node)?;
         let s3 = S3Client::new(config.s3)?;
-        let filters = Arc::new(
-            Filters::new(
-                config.filters,
-                config.redis,
-                config.node,
-                config.log.filters,
-            )
-            .await?,
-        );
 
         // Save required Tokenkeg Accounts
         let mut tokenkeg_owner_accounts: HashMap<Pubkey, ReplicaAccountInfo> = HashMap::new();
