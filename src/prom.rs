@@ -17,7 +17,7 @@ lazy_static::lazy_static! {
 
     static ref VERSION: IntCounterVec = IntCounterVec::new(
         Opts::new("version", "Plugin version info"),
-        &["key", "value"]
+        &["buildts", "git", "rustc", "solana", "version"]
     ).unwrap();
 
     static ref HEALTH_INFO: IntGaugeVec = IntGaugeVec::new(
@@ -150,15 +150,15 @@ impl PrometheusService {
             register!(UPLOAD_S3_REQUESTS);
             register!(UPLOAD_S3_TOTAL);
 
-            for (key, value) in &[
-                ("version", VERSION_INFO.version),
-                ("solana", VERSION_INFO.solana),
-                ("git", VERSION_INFO.git),
-                ("rustc", VERSION_INFO.rustc),
-                ("buildts", VERSION_INFO.buildts),
-            ] {
-                VERSION.with_label_values(&[key, value]).inc()
-            }
+            VERSION
+                .with_label_values(&[
+                    VERSION_INFO.buildts,
+                    VERSION_INFO.git,
+                    VERSION_INFO.rustc,
+                    VERSION_INFO.solana,
+                    VERSION_INFO.version,
+                ])
+                .inc()
         });
 
         let (tx, rx) = oneshot::channel();
