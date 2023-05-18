@@ -34,7 +34,7 @@ use {
     spl_token::state::Account as SplTokenAccount,
     std::{
         collections::{BTreeMap, BTreeSet, HashMap, LinkedList},
-        convert::TryInto,
+        convert::{TryFrom, TryInto},
         io::Result as IoResult,
         sync::{
             atomic::{AtomicBool, Ordering},
@@ -141,9 +141,9 @@ impl<'a> From<(ReplicaAccountInfoVersions<'a>, u64)> for ReplicaAccountInfo {
                 unreachable!("ReplicaAccountInfoVersions::V0_0_1 is not supported")
             }
             ReplicaAccountInfoVersions::V0_0_2(account) => Self {
-                pubkey: Pubkey::new(account.pubkey),
+                pubkey: Pubkey::try_from(account.pubkey).expect("valid pubkey"),
                 lamports: account.lamports,
-                owner: Pubkey::new(account.owner),
+                owner: Pubkey::try_from(account.owner).expect("valid pubkey"),
                 executable: account.executable,
                 rent_epoch: account.rent_epoch,
                 data: account.data.into(),
