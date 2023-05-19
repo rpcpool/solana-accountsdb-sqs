@@ -1,6 +1,6 @@
 [package]
 name = "solana-geyser-sqs"
-version = "0.2.1+solana.1.14.17"
+version = "0.2.2+solana.1.14.17"
 edition = "2018"
 publish = false
 
@@ -56,3 +56,10 @@ vergen = "=7.2.1"
 [profile.release]
 codegen-units = 1
 lto = true
+
+[patch.crates-io]
+solana-geyser-plugin-interface = { git = "https://github.com/rpcpool/solana-public.git", tag = "v1.14.17-geyser-block-v2" }
+solana-logger = { git = "https://github.com/rpcpool/solana-public.git", tag = "v1.14.17-geyser-block-v2" }
+solana-program = { git = "https://github.com/rpcpool/solana-public.git", tag = "v1.14.17-geyser-block-v2" }
+solana-sdk = { git = "https://github.com/rpcpool/solana-public.git", tag = "v1.14.17-geyser-block-v2" }
+solana-transaction-status = { git = "https://github.com/rpcpool/solana-public.git", tag = "v1.14.17-geyser-block-v2" }

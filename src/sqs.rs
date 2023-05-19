@@ -191,6 +191,20 @@ pub struct ReplicaBlockMetadata {
     pub block_time: Option<UnixTimestamp>,
 }
 
+impl From<ReplicaBlockInfoVersions<'_>> for ReplicaBlockMetadata {
+    fn from(blockinfo: ReplicaBlockInfoVersions) -> Self {
+        match blockinfo {
+            ReplicaBlockInfoVersions::V0_0_1(_info) => {
+                unreachable!("ReplicaBlockInfoVersions::V0_0_1 is not supported")
+            }
+            ReplicaBlockInfoVersions::V0_0_2(info) => Self {
+                slot: info.slot,
+                block_time: info.block_time,
+            },
+        }
+    }
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 enum Message {
@@ -494,11 +508,7 @@ impl AwsSqsClient {
         &mut self,
         blockinfo: ReplicaBlockInfoVersions,
     ) -> SqsClientResult {
-        let ReplicaBlockInfoVersions::V0_0_1(info) = blockinfo;
-        self.send_message(Message::NotifyBlockMetadata(ReplicaBlockMetadata {
-            slot: info.slot,
-            block_time: info.block_time,
-        }))
+        self.send_message(Message::NotifyBlockMetadata(blockinfo.into()))
     }
 
     async fn send_loop(
