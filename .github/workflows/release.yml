@@ -1,7 +1,15 @@
+name: Release plugin
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     tags:
       - 'v*'
+    branches:
+      - 'master'
   pull_request:
     paths:
       - '.github/workflows/release.yml'
@@ -11,7 +19,10 @@ env:
 
 jobs:
   release:
-    runs-on: ubuntu-20.04
+    strategy:
+      matrix:
+        os: [ubuntu-20.04, ubuntu-22.04]
+    runs-on: ["${{ matrix.os }}"]
     steps:
       - uses: actions/checkout@v2
 
@@ -38,6 +49,16 @@ jobs:
           profile: minimal
           components: rustfmt
 
+      - uses: actions/cache@v3
+        with:
+          path: |
+              ~/.cargo/bin/
+              ~/.cargo/registry/index/
+              ~/.cargo/registry/cache/
+              ~/.cargo/git/db/
+              target
+          key: ${{ matrix.os }}-cargo-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}-0001
+
       - name: Check Solana version
         run: |
           echo "CI_TAG=${GITHUB_REF#refs/*/}" >> "$GITHUB_ENV"
@@ -47,17 +68,35 @@ jobs:
           SOLANA_VERSION="v${SOLANA_VERSION#=}"
           echo "SOLANA_VERSION=$SOLANA_VERSION" >> "$GITHUB_ENV"
 
+      - name: Create build name
+        run: |
+          echo "BUILD_NAME=$CI_TAG" >> "$GITHUB_ENV"
+
       - name: Build release tarball
         run: ./ci/create-tarball.sh
 
+      - name: Rename binaries for ubuntu22 release
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          mv target/release/config target/release/config-22
+          mv target/release/consumer target/release/consumer-22
+          mv ${{ env.GEYSER_PLUGIN_NAME }}-release-x86_64-unknown-linux-gnu.tar.bz2 ${{ env.GEYSER_PLUGIN_NAME }}-release22-x86_64-unknown-linux-gnu.tar.bz2
+          mv ${{ env.GEYSER_PLUGIN_NAME }}-release-x86_64-unknown-linux-gnu.yml ${{ env.GEYSER_PLUGIN_NAME }}-release22-x86_64-unknown-linux-gnu.yml
+
+      - name: Deleteing .d files
+        run: |
+          rm -rf target/release/config.d target/release/consumer.d
+
       - name: Release
-        uses: softprops/action-gh-release@v1
         if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
         with:
+          tag_name: ${{ env.BUILD_NAME }}
           body: |
             ${{ env.GEYSER_PLUGIN_NAME }} ${{ env.CI_TAG }}
             solana ${{ env.SOLANA_VERSION }}
             rust ${{ env.RUST_STABLE }}
           files: |
-            ${{ env.GEYSER_PLUGIN_NAME }}-release-*
-
+            ${{ env.GEYSER_PLUGIN_NAME }}-release*
+            target/release/config*
+            target/release/consumer*
