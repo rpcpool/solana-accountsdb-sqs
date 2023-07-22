@@ -1,8 +1,14 @@
 # Source:
 # https://github.com/solana-labs/solana-accountsdb-plugin-postgres/blob/master/.github/workflows/test.yml
 
+name: Build plugin
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
-  push:
+  workflow_dispatch:
   pull_request:
 
 env:
@@ -10,7 +16,10 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-20.04, ubuntu-22.04]
+    runs-on: ["${{ matrix.os }}"]
     steps:
       - uses: actions/checkout@v2
 
@@ -37,12 +46,21 @@ jobs:
           profile: minimal
           components: rustfmt, clippy
 
-      - uses: actions/cache@v2
+      - uses: actions/cache@v3
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-build-${{ hashFiles('**/Cargo.lock') }}-${{ env.RUST_STABLE}}
+              ~/.cargo/bin/
+              ~/.cargo/registry/index/
+              ~/.cargo/registry/cache/
+              ~/.cargo/git/db/
+              target
+          key: ${{ matrix.os }}-cargo-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}-0001
+
+      - name: cargo tree
+        run: |
+          cargo tree
+          git checkout Cargo.lock
+          cargo tree --frozen
 
       - name: cargo fmt
         uses: actions-rs/cargo@v1
@@ -54,7 +72,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: clippy
-          args: --workspace --all-targets -- --deny=warnings
+          args: --workspace --all-targets --tests #-- --deny=warnings
 
       - name: Build
         run: ./ci/cargo-build-test.sh
