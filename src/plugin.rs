@@ -24,12 +24,12 @@ pub struct Plugin {
 }
 
 impl Plugin {
-    fn with_client<F>(&mut self, f: F) -> PluginResult<()>
+    fn with_client<F>(&self, f: F) -> PluginResult<()>
     where
-        F: FnOnce(&mut AwsSqsClient) -> SqsClientResult,
+        F: FnOnce(&AwsSqsClient) -> SqsClientResult,
     {
-        let inner = self.inner.as_mut().expect("initialized");
-        f(&mut inner.client).map_err(|error| GeyserPluginError::Custom(Box::new(error)))
+        let inner = self.inner.as_ref().expect("initialized");
+        f(&inner.client).map_err(|error| GeyserPluginError::Custom(Box::new(error)))
     }
 }
 
@@ -69,7 +69,7 @@ impl GeyserPlugin for Plugin {
     }
 
     fn update_account(
-        &mut self,
+        &self,
         account: ReplicaAccountInfoVersions,
         slot: u64,
         _is_startup: bool,
@@ -77,12 +77,12 @@ impl GeyserPlugin for Plugin {
         self.with_client(|sqs| sqs.update_account(account, slot))
     }
 
-    fn notify_end_of_startup(&mut self) -> PluginResult<()> {
+    fn notify_end_of_startup(&self) -> PluginResult<()> {
         self.with_client(|sqs| sqs.startup_finished())
     }
 
     fn update_slot_status(
-        &mut self,
+        &self,
         slot: u64,
         _parent: Option<u64>,
         status: SlotStatus,
@@ -91,14 +91,14 @@ impl GeyserPlugin for Plugin {
     }
 
     fn notify_transaction(
-        &mut self,
+        &self,
         transaction: ReplicaTransactionInfoVersions,
         slot: u64,
     ) -> PluginResult<()> {
         self.with_client(|sqs| sqs.notify_transaction(transaction, slot))
     }
 
-    fn notify_block_metadata(&mut self, blockinfo: ReplicaBlockInfoVersions) -> PluginResult<()> {
+    fn notify_block_metadata(&self, blockinfo: ReplicaBlockInfoVersions) -> PluginResult<()> {
         self.with_client(|sqs| sqs.notify_block_metadata(blockinfo))
     }
 

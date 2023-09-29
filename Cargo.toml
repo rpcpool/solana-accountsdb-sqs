@@ -1,6 +1,6 @@
 [package]
 name = "solana-geyser-sqs"
-version = "0.2.3+solana.1.14.17"
+version = "0.2.4+solana.1.16.14"
 edition = "2018"
 publish = false
 
@@ -14,7 +14,7 @@ async-trait = "0.1"
 base64 = "0.13.0"
 bincode = "1.3"
 chrono = "0.4"
-clap = { version = "3.1.8", features = ["cargo", "derive"] }
+clap = { version = "4.3.0", features = ["cargo", "derive"] }
 derivative = "2"
 enumflags2 = "0.6.4"
 flate2 = "1"
@@ -38,28 +38,22 @@ safe-transmute = "0.11"
 serde = { version = "1.0.132", features = ["derive"] }
 serde_json = "1.0.73"
 serum_dex = "0.5.4"
-solana-geyser-plugin-interface = "=1.14.17"
-solana-logger = "=1.14.17"
-solana-sdk = "=1.14.17"
-solana-transaction-status = "=1.14.17"
+solana-geyser-plugin-interface = "=1.16.14"
+solana-logger = "=1.16.14"
+solana-sdk = "=1.16.14"
+solana-transaction-status = "=1.16.14"
 spl-token = "3.5.0"
 thiserror = "1.0.30"
 tokio = { version = "1.15.0", features = ["rt-multi-thread", "time", "macros", "io-util"] }
 zstd = "0.11.1"
 
 [build-dependencies]
-anyhow = "1"
-cargo-lock = "8"
-git-version = "0.3"
-vergen = "=7.2.1"
+anyhow = "1.0.62"
+cargo-lock = "9.0.0"
+git-version = "0.3.5"
+vergen = { version = "8.2.1", features = ["build", "rustc"] }
 
 [profile.release]
-codegen-units = 1
+debug = true
 lto = true
-
-[patch.crates-io]
-solana-geyser-plugin-interface = { git = "https://github.com/rpcpool/solana-public.git", tag = "v1.14.17-geyser-block-v2" }
-solana-logger = { git = "https://github.com/rpcpool/solana-public.git", tag = "v1.14.17-geyser-block-v2" }
-solana-program = { git = "https://github.com/rpcpool/solana-public.git", tag = "v1.14.17-geyser-block-v2" }
-solana-sdk = { git = "https://github.com/rpcpool/solana-public.git", tag = "v1.14.17-geyser-block-v2" }
-solana-transaction-status = { git = "https://github.com/rpcpool/solana-public.git", tag = "v1.14.17-geyser-block-v2" }
+codegen-units = 1

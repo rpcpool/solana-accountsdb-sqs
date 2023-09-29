@@ -35,7 +35,7 @@ impl FromStr for EventFlag {
 }
 
 impl EventFlag {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             EventFlag::Fill => "Fill",
             EventFlag::Out => "Out",

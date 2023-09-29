@@ -77,7 +77,7 @@ pub mod health {
     }
 
     impl HealthInfoType {
-        pub fn as_str(self) -> &'static str {
+        pub const fn as_str(self) -> &'static str {
             match self {
                 Self::SendLoop => "send_loop",
                 Self::RedisAdmin => "redis_admin",
@@ -100,7 +100,7 @@ pub enum UploadMessagesStatus {
 }
 
 impl UploadMessagesStatus {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Success => "success",
             Self::Failed => "failed",
@@ -116,7 +116,7 @@ pub enum UploadAwsStatus {
 }
 
 impl UploadAwsStatus {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Success => "success",
             Self::Failed => "failed",

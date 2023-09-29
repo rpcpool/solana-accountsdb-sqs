@@ -250,7 +250,7 @@ pub enum ConfigMgmtMsgFilterAccounts {
 }
 
 impl ConfigMgmtMsgFilterAccounts {
-    pub fn as_str(&self) -> &str {
+    pub const fn as_str(&self) -> &str {
         match *self {
             Self::Account => "account",
             Self::Owner => "owner",
@@ -268,7 +268,7 @@ pub enum ConfigMgmtMsgFilterTransactions {
 }
 
 impl ConfigMgmtMsgFilterTransactions {
-    pub fn as_str(&self) -> &str {
+    pub const fn as_str(&self) -> &str {
         match *self {
             Self::AccountsInclude => "accounts.include",
             Self::AccountsExclude => "accounts.exclude",
