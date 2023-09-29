@@ -74,6 +74,7 @@ impl SqsMessageAttributes {
             .map(|s| s.as_str())
     }
 
+    #[allow(clippy::missing_const_for_fn)]
     pub fn into_inner(self) -> HashMap<String, MessageAttributeValue> {
         self.map
     }
@@ -199,7 +200,7 @@ impl SqsClient {
         .map(|_| ())
     }
 
-    pub fn is_typed(&self) -> bool {
+    pub const fn is_typed(&self) -> bool {
         matches!(self.queue_url, SqsClientQueueUrl::Typed { .. })
     }
 

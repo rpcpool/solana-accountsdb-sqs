@@ -246,7 +246,7 @@ pub enum AccountsDataCompression {
 }
 
 impl AccountsDataCompression {
-    fn zstd_default_level() -> i32 {
+    const fn zstd_default_level() -> i32 {
         zstd::DEFAULT_COMPRESSION_LEVEL
     }
 
@@ -269,7 +269,7 @@ impl AccountsDataCompression {
         })
     }
 
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match *self {
             AccountsDataCompression::None => "none",
             AccountsDataCompression::Zstd { .. } => "zstd",
@@ -441,7 +441,7 @@ impl PartialEq<PubkeyWithSource> for PubkeyWithSource {
     }
 }
 
-#[allow(clippy::derive_hash_xor_eq)]
+#[allow(clippy::derived_hash_with_manual_eq)]
 impl Hash for PubkeyWithSource {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self {
@@ -491,10 +491,10 @@ impl PubkeyWithSource {
         if let Self::Redis { set, keys } = self {
             match keys {
                 Some(keys) => {
-                    pipe.del(&set);
+                    pipe.del(set);
                     let keys = keys.iter().map(|k| k.to_string()).collect::<Vec<_>>();
                     if !keys.is_empty() {
-                        pipe.sadd(&set, &keys);
+                        pipe.sadd(set, &keys);
                     }
                 }
                 None => return Err(PubkeyWithSourceError::ExpectedLoadedPubkeys),

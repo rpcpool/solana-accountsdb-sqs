@@ -61,7 +61,7 @@ pub enum SlotStatus {
 }
 
 impl SlotStatus {
-    fn as_str(self) -> &'static str {
+    const fn as_str(self) -> &'static str {
         match self {
             Self::Processed => "processed",
             Self::Confirmed => "confirmed",
@@ -140,7 +140,10 @@ impl<'a> From<(ReplicaAccountInfoVersions<'a>, u64)> for ReplicaAccountInfo {
             ReplicaAccountInfoVersions::V0_0_1(_account) => {
                 unreachable!("ReplicaAccountInfoVersions::V0_0_1 is not supported")
             }
-            ReplicaAccountInfoVersions::V0_0_2(account) => Self {
+            ReplicaAccountInfoVersions::V0_0_2(_account) => {
+                unreachable!("ReplicaAccountInfoVersions::V0_0_2 is not supported")
+            }
+            ReplicaAccountInfoVersions::V0_0_3(account) => Self {
                 pubkey: Pubkey::try_from(account.pubkey).expect("valid pubkey"),
                 lamports: account.lamports,
                 owner: Pubkey::try_from(account.owner).expect("valid pubkey"),
@@ -149,7 +152,7 @@ impl<'a> From<(ReplicaAccountInfoVersions<'a>, u64)> for ReplicaAccountInfo {
                 data: account.data.into(),
                 write_version: account.write_version,
                 slot,
-                txn_signature: account.txn_signature.cloned(),
+                txn_signature: account.txn.map(|tx| *tx.signature()),
             },
         }
     }
@@ -232,7 +235,7 @@ enum SendMessage {
 }
 
 impl SendMessage {
-    fn get_type(&self) -> SendMessageType {
+    const fn get_type(&self) -> SendMessageType {
         match self {
             Self::Slot(_) => SendMessageType::Slot,
             Self::Account(_) => SendMessageType::Account,
@@ -240,7 +243,7 @@ impl SendMessage {
         }
     }
 
-    fn payload(&self, compression: &AccountsDataCompression) -> IoResult<(String, String)> {
+    fn payload(&self, compression: AccountsDataCompression) -> IoResult<(String, String)> {
         let mut md5 = Md5::new();
         let value = match self {
             SendMessage::Slot((status, slot)) => {
@@ -281,7 +284,7 @@ impl SendMessage {
                     "type": "transaction",
                     "filters": filters,
                     "signature": transaction.signature.to_string(),
-                    "transaction": base64::encode(&bincode::serialize(&transaction.transaction.to_versioned_transaction()).unwrap()),
+                    "transaction": base64::encode(bincode::serialize(&transaction.transaction.to_versioned_transaction()).unwrap()),
                     "meta": transaction.meta,
                     "slot": transaction.slot,
                     "block_time": transaction.block_time.unwrap_or_default(),
@@ -368,7 +371,7 @@ impl SendMessageWithPayload {
 
     fn new(
         message: SendMessage,
-        accounts_data_compression: &AccountsDataCompression,
+        accounts_data_compression: AccountsDataCompression,
     ) -> IoResult<Self> {
         message
             .payload(accounts_data_compression)
@@ -407,7 +410,7 @@ pub type SqsClientResult<T = ()> = Result<T, SqsClientError>;
 #[derive(Debug)]
 pub struct AwsSqsClient {
     send_queue: mpsc::UnboundedSender<Message>,
-    send_queue_error: bool,
+    send_queue_error: AtomicBool,
     startup_job: Arc<AtomicBool>,
     send_job: Arc<AtomicBool>,
 }
@@ -453,22 +456,22 @@ impl AwsSqsClient {
 
         Ok(Self {
             send_queue,
-            send_queue_error: false,
+            send_queue_error: AtomicBool::new(false),
             startup_job,
             send_job,
         })
     }
 
-    fn send_message(&mut self, message: Message) -> SqsClientResult {
-        if self.send_queue.send(message).is_err() && !self.send_queue_error {
-            self.send_queue_error = true;
+    fn send_message(&self, message: Message) -> SqsClientResult {
+        if self.send_queue.send(message).is_err() && !self.send_queue_error.load(Ordering::SeqCst) {
+            self.send_queue_error.store(true, Ordering::SeqCst);
             Err(SqsClientError::UpdateQueueChannelClosed)
         } else {
             Ok(())
         }
     }
 
-    pub async fn shutdown(mut self) {
+    pub async fn shutdown(self) {
         if self.send_message(Message::Shutdown).is_ok() {
             while self.send_job.load(Ordering::Relaxed) {
                 sleep_async(Duration::from_micros(10)).await;
@@ -476,7 +479,7 @@ impl AwsSqsClient {
         }
     }
 
-    pub fn startup_finished(&mut self) -> SqsClientResult {
+    pub fn startup_finished(&self) -> SqsClientResult {
         self.send_message(Message::StartupFinished)?;
         while self.startup_job.load(Ordering::Relaxed) {
             sleep(Duration::from_micros(10));
@@ -484,12 +487,12 @@ impl AwsSqsClient {
         Ok(())
     }
 
-    pub fn update_slot(&mut self, slot: u64, status: GeyserSlotStatus) -> SqsClientResult {
+    pub fn update_slot(&self, slot: u64, status: GeyserSlotStatus) -> SqsClientResult {
         self.send_message(Message::UpdateSlot((status.into(), slot)))
     }
 
     pub fn update_account(
-        &mut self,
+        &self,
         account: ReplicaAccountInfoVersions,
         slot: u64,
     ) -> SqsClientResult {
@@ -497,17 +500,14 @@ impl AwsSqsClient {
     }
 
     pub fn notify_transaction(
-        &mut self,
+        &self,
         transaction: ReplicaTransactionInfoVersions,
         slot: u64,
     ) -> SqsClientResult {
         self.send_message(Message::NotifyTransaction((transaction, slot).into()))
     }
 
-    pub fn notify_block_metadata(
-        &mut self,
-        blockinfo: ReplicaBlockInfoVersions,
-    ) -> SqsClientResult {
+    pub fn notify_block_metadata(&self, blockinfo: ReplicaBlockInfoVersions) -> SqsClientResult {
         self.send_message(Message::NotifyBlockMetadata(blockinfo.into()))
     }
 
@@ -573,7 +573,7 @@ impl AwsSqsClient {
         fn add_message(
             messages: &mut LinkedList<SendMessageWithPayload>,
             message: SendMessage,
-            accounts_data_compression: &AccountsDataCompression,
+            accounts_data_compression: AccountsDataCompression,
         ) {
             match SendMessageWithPayload::new(message, accounts_data_compression) {
                 Ok(message) => {
@@ -610,7 +610,7 @@ impl AwsSqsClient {
             tokenkeg_owner_accounts_hist: &mut HashMap<Pubkey, Option<ReplicaAccountInfo>>,
             tokenkeg_delegate_accounts_hist: &mut HashMap<Pubkey, Option<ReplicaAccountInfo>>,
             transactions: &[ReplicaTransactionInfo],
-            accounts_data_compression: &AccountsDataCompression,
+            accounts_data_compression: AccountsDataCompression,
         ) {
             let mut account_filters = filters.create_accounts_match().await;
             for account in accounts {
@@ -765,7 +765,7 @@ impl AwsSqsClient {
                             tokenkeg_owner_accounts_hist.entry($slot).or_default(),
                             tokenkeg_delegate_accounts_hist.entry($slot).or_default(),
                             transactions,
-                            &accounts_data_compression,
+                            accounts_data_compression,
                         ).await;
                     }
                     (accounts, transactions, block) => {
@@ -839,7 +839,7 @@ impl AwsSqsClient {
                             .set(slot as i64);
 
                         if filters.is_slot_messages_enabled().await {
-                            add_message(&mut messages, SendMessage::Slot((status, slot)), &accounts_data_compression);
+                            add_message(&mut messages, SendMessage::Slot((status, slot)), accounts_data_compression);
                         }
 
                         if status == commitment_level {

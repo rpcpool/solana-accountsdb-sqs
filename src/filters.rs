@@ -376,7 +376,7 @@ struct AccountsFilterExistence {
 }
 
 impl AccountsFilterExistence {
-    fn is_empty(&self) -> bool {
+    const fn is_empty(&self) -> bool {
         !(self.account
             || self.owner
             || self.data_size
@@ -596,7 +596,7 @@ impl AccountsFilter {
                 let value = map_required.entry(name.clone()).or_default();
                 *value += 1;
                 *existence_field = true;
-                logs.then(|| "added to")
+                logs.then_some("added to")
             }
             ConfigMgmtMsgAction::Remove => {
                 let set = match map.get_mut(&pubkey) {
@@ -626,7 +626,7 @@ impl AccountsFilter {
                     map_required.remove(&name);
                 }
 
-                logs.then(|| "removed from")
+                logs.then_some("removed from")
             }
         } {
             info!(
@@ -924,7 +924,7 @@ impl TransactionsFilter {
                         target.as_str()
                     ));
                 }
-                logs.then(|| "added to")
+                logs.then_some("added to")
             }
             ConfigMgmtMsgAction::Remove => {
                 if !set.remove(&pubkey) {
@@ -935,7 +935,7 @@ impl TransactionsFilter {
                         target.as_str()
                     ));
                 }
-                logs.then(|| "removed from")
+                logs.then_some("removed from")
             }
         } {
             info!(
