@@ -1,6 +1,6 @@
 [package]
 name = "solana-geyser-sqs"
-version = "0.3.0+solana.1.16.15"
+version = "0.3.0+solana.1.16.17"
 edition = "2018"
 publish = false
 
@@ -38,11 +38,11 @@ safe-transmute = "0.11.2"
 serde = { version = "1.0.132", features = ["derive"] }
 serde_json = "1.0.73"
 serum_dex = "0.5.4"
-solana-geyser-plugin-interface = "=1.16.15"
-solana-logger = "=1.16.15"
-solana-sdk = "=1.16.15"
-solana-transaction-status = "=1.16.15"
-spl-token = "=4.0.0"
+solana-geyser-plugin-interface = "=1.16.17"
+solana-logger = "=1.16.17"
+solana-sdk = "=1.16.17"
+solana-transaction-status = "=1.16.17"
+spl-token = { version = "=4.0.0", features = ["no-entrypoint"] }
 thiserror = "1.0.30"
 tokio = { version = "1.32.0", features = ["rt-multi-thread", "time", "macros", "io-util"] }
 zstd = "0.12.4"
@@ -57,3 +57,9 @@ vergen = { version = "8.2.1", features = ["build", "rustc"] }
 debug = true
 lto = true
 codegen-units = 1
+
+[patch.crates-io]
+solana-geyser-plugin-interface = { git = "https://github.com/rpcpool/solana-public.git", tag = "v1.16.17-geyser-block-v3" }
+solana-program = { git = "https://github.com/rpcpool/solana-public.git", tag = "v1.16.17-geyser-block-v3" }
+solana-sdk = { git = "https://github.com/rpcpool/solana-public.git", tag = "v1.16.17-geyser-block-v3" }
+solana-transaction-status = { git = "https://github.com/rpcpool/solana-public.git", tag = "v1.16.17-geyser-block-v3" }
