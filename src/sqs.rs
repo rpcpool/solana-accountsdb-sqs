@@ -201,7 +201,10 @@ impl From<ReplicaBlockInfoVersions<'_>> for ReplicaBlockMetadata {
             ReplicaBlockInfoVersions::V0_0_1(_info) => {
                 unreachable!("ReplicaBlockInfoVersions::V0_0_1 is not supported")
             }
-            ReplicaBlockInfoVersions::V0_0_2(info) => Self {
+            ReplicaBlockInfoVersions::V0_0_2(_info) => {
+                unreachable!("ReplicaBlockInfoVersions::V0_0_2 is not supported")
+            }
+            ReplicaBlockInfoVersions::V0_0_3(info) => Self {
                 slot: info.slot,
                 block_time: info.block_time,
             },
