@@ -1,6 +1,6 @@
 [package]
 name = "solana-geyser-sqs"
-version = "0.3.0+solana.1.16.17"
+version = "0.3.1+solana.1.16.17"
 edition = "2018"
 publish = false
 
