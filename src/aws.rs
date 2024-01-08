@@ -85,7 +85,7 @@ impl<'de> Deserialize<'de> for SqsMessageAttributes {
     where
         D: Deserializer<'de>,
     {
-        let not_allowed = vec!["compression", "md5", "node"];
+        let not_allowed = ["compression", "md5", "node"];
 
         let mut attributes = SqsMessageAttributes::default();
 
