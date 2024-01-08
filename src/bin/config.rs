@@ -316,7 +316,7 @@ async fn main() -> Result<()> {
                 account_remove_exclude,
             } => {
                 let mut config = admin.get_global_config().await?;
-                if let Some(mut filter) = config.transactions.get_mut(&name) {
+                if let Some(filter) = config.transactions.get_mut(&name) {
                     let mut changed = false;
                     match vote {
                         Some(vote) if filter.vote != vote => {

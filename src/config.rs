@@ -594,7 +594,8 @@ where
             EventFlag::ReleaseFunds,
         ]
         .iter()
-        .filter_map(|event| flag.contains(*event).then(|| event.as_str()))
+        .filter(|event| flag.contains(**event))
+        .map(|event| event.as_str())
         .collect::<Vec<_>>();
 
         seq.serialize_element(events)?;
