@@ -8,7 +8,11 @@ use {
         GeyserPlugin, GeyserPluginError, ReplicaAccountInfoVersions, ReplicaBlockInfoVersions,
         ReplicaTransactionInfoVersions, Result as PluginResult, SlotStatus,
     },
-    tokio::{runtime::Runtime, time::Duration},
+    std::sync::atomic::{AtomicUsize, Ordering},
+    tokio::{
+        runtime::{Builder, Runtime},
+        time::Duration,
+    },
 };
 
 #[derive(Debug)]
@@ -45,7 +49,16 @@ impl GeyserPlugin for Plugin {
         solana_logger::setup_with_default(&config.log.level);
 
         // Create inner
-        let runtime = Runtime::new().map_err(|error| GeyserPluginError::Custom(Box::new(error)))?;
+        let runtime = Builder::new_multi_thread()
+            .thread_name_fn(|| {
+                static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
+                let id = ATOMIC_ID.fetch_add(1, Ordering::Relaxed);
+                format!("solGeyserSqs{id:02}")
+            })
+            .enable_all()
+            .build()
+            .map_err(|error| GeyserPluginError::Custom(Box::new(error)))?;
+
         let prometheus = PrometheusService::new(&runtime, config.prometheus);
         let client = runtime
             .block_on(AwsSqsClient::new(config))
