@@ -8,7 +8,10 @@ use {
         GeyserPlugin, GeyserPluginError, ReplicaAccountInfoVersions, ReplicaBlockInfoVersions,
         ReplicaTransactionInfoVersions, Result as PluginResult, SlotStatus,
     },
-    std::sync::atomic::{AtomicUsize, Ordering},
+    std::{
+        concat, env,
+        sync::atomic::{AtomicUsize, Ordering},
+    },
     tokio::{
         runtime::{Builder, Runtime},
         time::Duration,
@@ -39,7 +42,7 @@ impl Plugin {
 
 impl GeyserPlugin for Plugin {
     fn name(&self) -> &'static str {
-        "GeyserPluginSqs"
+        concat!(env!("CARGO_PKG_NAME"), "-", env!("CARGO_PKG_VERSION"))
     }
 
     fn on_load(&mut self, config_file: &str) -> PluginResult<()> {
