@@ -1,18 +1,22 @@
-name: Release plugin
+permissions:
+  contents: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 on:
-  push:
-    tags:
-      - 'v*'
-    branches:
-      - 'master'
   pull_request:
     paths:
       - '.github/workflows/release.yml'
+  push:
+    branches:
+      - 'master'
+      - 'v1.16'
+      - 'v1.17'
+    tags:
+      - 'v*'
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -23,13 +27,14 @@ jobs:
       matrix:
         os: [ubuntu-20.04, ubuntu-22.04]
     runs-on: ["${{ matrix.os }}"]
+
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Set rust version
         run: |
-          source ci/rust-version.sh
-          echo "RUST_STABLE=$rust_stable" | tee -a $GITHUB_ENV
+          RUST_VERSION="$(grep -oP 'channel = "\K\d\.\d+\.\d+(?=")' rust-toolchain.toml)"
+          echo "RUST_VERSION=$RUST_VERSION" >> "$GITHUB_ENV"
 
       - name: Set env vars
         run: |
@@ -42,22 +47,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libudev-dev libssl-dev libsasl2-dev libzstd-dev
 
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{ env.RUST_STABLE }}
-          override: true
-          profile: minimal
-          components: rustfmt
-
-      - uses: actions/cache@v3
+      - uses: actions/cache@v4
         with:
           path: |
-              ~/.cargo/bin/
-              ~/.cargo/registry/index/
-              ~/.cargo/registry/cache/
-              ~/.cargo/git/db/
-              target
-          key: ${{ matrix.os }}-cargo-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}-0001
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ./target
+          key: cargo-${{ matrix.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('**/Cargo.lock') }}-0000
+          restore-keys: |
+            cargo-${{ matrix.os }}-${{ hashFiles('rust-toolchain.toml') }}
 
       - name: Check Solana version
         run: |
@@ -89,13 +89,13 @@ jobs:
 
       - name: Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.BUILD_NAME }}
           body: |
             ${{ env.GEYSER_PLUGIN_NAME }} ${{ env.CI_TAG }}
             solana ${{ env.SOLANA_VERSION }}
-            rust ${{ env.RUST_STABLE }}
+            rust ${{ env.RUST_VERSION }}
           files: |
             ${{ env.GEYSER_PLUGIN_NAME }}-release*
             target/release/config*
