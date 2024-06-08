@@ -45,7 +45,7 @@ impl GeyserPlugin for Plugin {
         concat!(env!("CARGO_PKG_NAME"), "-", env!("CARGO_PKG_VERSION"))
     }
 
-    fn on_load(&mut self, config_file: &str) -> PluginResult<()> {
+    fn on_load(&mut self, config_file: &str, _is_reload: bool) -> PluginResult<()> {
         let config = Config::load_from_file(config_file)?;
 
         // Setup logger
