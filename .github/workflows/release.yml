@@ -14,6 +14,8 @@ on:
       - 'master'
       - 'v1.16'
       - 'v1.17'
+      - 'v1.18'
+      - 'v2.0'
     tags:
       - 'v*'
   workflow_dispatch:
