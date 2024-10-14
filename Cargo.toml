@@ -1,7 +1,7 @@
 [package]
 name = "solana-geyser-sqs"
 version = "0.3.2"
-edition = "2018"
+edition = "2021"
 publish = false
 
 [lib]
