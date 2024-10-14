@@ -1,7 +1,7 @@
 use {
     crate::{
         config::{ConfigFilters, ConfigRedis, PubkeyWithSource, PubkeyWithSourceError},
-        prom::health::{set_health, HealthInfoType},
+        metrics::health::{set_health, HealthInfoType},
     },
     futures::stream::{Stream, StreamExt},
     log::*,

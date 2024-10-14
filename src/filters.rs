@@ -9,7 +9,7 @@ use {
             ConfigSlotsFilter, ConfigTransactionsAccountsFilter, ConfigTransactionsFilter,
             PubkeyWithSource,
         },
-        prom::health::{set_health, HealthInfoType},
+        metrics::health::{set_health, HealthInfoType},
         serum::{self, EventFlag},
         sqs::{ReplicaAccountInfo, ReplicaTransactionInfo},
         version::VERSION,
@@ -678,11 +678,11 @@ impl<'a> AccountsFilterMatch<'a> {
     }
 
     pub fn contains_tokenkeg_owner(&self, owner: &Pubkey) -> bool {
-        self.accounts_filter.tokenkeg_owner.get(owner).is_some()
+        self.accounts_filter.tokenkeg_owner.contains_key(owner)
     }
 
     pub fn contains_tokenkeg_delegate(&self, owner: &Pubkey) -> bool {
-        self.accounts_filter.tokenkeg_delegate.get(owner).is_some()
+        self.accounts_filter.tokenkeg_delegate.contains_key(owner)
     }
 
     fn extend<Q: Hash + Eq>(

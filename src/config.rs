@@ -5,6 +5,9 @@ use {
         serum::EventFlag,
         sqs::SlotStatus,
     },
+    agave_geyser_plugin_interface::geyser_plugin_interface::{
+        GeyserPluginError, Result as PluginResult,
+    },
     enumflags2::BitFlags,
     flate2::{write::GzEncoder, Compression as GzCompression},
     redis::{
@@ -12,9 +15,6 @@ use {
     },
     rusoto_core::Region,
     serde::{de, ser::SerializeSeq, Deserialize, Deserializer, Serialize, Serializer},
-    solana_geyser_plugin_interface::geyser_plugin_interface::{
-        GeyserPluginError, Result as PluginResult,
-    },
     solana_sdk::pubkey::Pubkey,
     std::{
         borrow::Cow,
