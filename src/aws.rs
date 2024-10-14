@@ -1,14 +1,13 @@
 use {
     crate::{
         config::{ConfigAwsAuth, ConfigAwsS3, ConfigAwsSqs},
-        prom::{
+        metrics::{
             UploadAwsStatus, UPLOAD_S3_REQUESTS, UPLOAD_S3_TOTAL, UPLOAD_SQS_REQUESTS,
             UPLOAD_SQS_TOTAL,
         },
         sqs::SendMessageType,
     },
     futures::future::{try_join_all, BoxFuture},
-    hyper::Client,
     hyper_tls::HttpsConnector,
     log::*,
     rusoto_core::{request::TlsError, ByteStream, Client as RusotoClient, HttpClient, RusotoError},
@@ -417,7 +416,7 @@ where
 }
 
 fn aws_create_client(config: ConfigAwsAuth) -> AwsResult<RusotoClient> {
-    let mut builder = Client::builder();
+    let mut builder = hyper0::Client::builder();
     builder.pool_idle_timeout(Duration::from_secs(10));
     builder.pool_max_idle_per_host(10);
     // Fix: `connection closed before message completed` but introduce `dns error: failed to lookup address information`

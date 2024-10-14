@@ -1,10 +1,10 @@
 use {
     crate::{
         config::Config,
-        prom::PrometheusService,
+        metrics::PrometheusService,
         sqs::{AwsSqsClient, SqsClientResult},
     },
-    solana_geyser_plugin_interface::geyser_plugin_interface::{
+    agave_geyser_plugin_interface::geyser_plugin_interface::{
         GeyserPlugin, GeyserPluginError, ReplicaAccountInfoVersions, ReplicaBlockInfoVersions,
         ReplicaTransactionInfoVersions, Result as PluginResult, SlotStatus,
     },
@@ -62,7 +62,11 @@ impl GeyserPlugin for Plugin {
             .build()
             .map_err(|error| GeyserPluginError::Custom(Box::new(error)))?;
 
-        let prometheus = PrometheusService::new(&runtime, config.prometheus);
+        let prometheus = runtime.block_on(async move {
+            PrometheusService::new(config.prometheus)
+                .await
+                .map_err(|error| GeyserPluginError::Custom(Box::new(error)))
+        })?;
         let client = runtime
             .block_on(AwsSqsClient::new(config))
             .map_err(|error| GeyserPluginError::Custom(Box::new(error)))?;

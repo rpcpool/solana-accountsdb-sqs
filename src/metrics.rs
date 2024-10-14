@@ -1,15 +1,22 @@
 use {
     crate::{config::ConfigPrometheus, version::VERSION as VERSION_INFO},
-    futures::FutureExt,
+    http_body_util::{combinators::BoxBody, BodyExt, Empty as BodyEmpty, Full as BodyFull},
     hyper::{
-        server::conn::AddrStream,
-        service::{make_service_fn, service_fn},
-        Body, Request, Response, Server, StatusCode,
+        body::{Bytes, Incoming as BodyIncoming},
+        service::service_fn,
+        Request, Response, StatusCode,
+    },
+    hyper_util::{
+        rt::tokio::{TokioExecutor, TokioIo},
+        server::conn::auto::Builder as ServerBuilder,
     },
     log::*,
     prometheus::{IntCounterVec, IntGauge, IntGaugeVec, Opts, Registry, TextEncoder},
-    std::sync::Once,
-    tokio::{runtime::Runtime, sync::oneshot},
+    std::{
+        convert::Infallible,
+        sync::{Arc, Once},
+    },
+    tokio::{net::TcpListener, sync::Notify},
 };
 
 lazy_static::lazy_static! {
@@ -126,11 +133,11 @@ impl UploadAwsStatus {
 
 #[derive(Debug)]
 pub struct PrometheusService {
-    shutdown_signal: oneshot::Sender<()>,
+    shutdown: Arc<Notify>,
 }
 
 impl PrometheusService {
-    pub fn new(runtime: &Runtime, config: Option<ConfigPrometheus>) -> Self {
+    pub async fn new(config: Option<ConfigPrometheus>) -> std::io::Result<Self> {
         static REGISTER: Once = Once::new();
         REGISTER.call_once(|| {
             macro_rules! register {
@@ -161,48 +168,65 @@ impl PrometheusService {
                 .inc()
         });
 
-        let (tx, rx) = oneshot::channel();
+        let shutdown = Arc::new(Notify::new());
         if let Some(ConfigPrometheus { address }) = config {
-            runtime.spawn(async move {
-                let make_service = make_service_fn(move |_: &AddrStream| async move {
-                    Ok::<_, hyper::Error>(service_fn(move |req: Request<Body>| async move {
-                        let response = match req.uri().path() {
-                            "/metrics" => metrics_handler(),
-                            _ => not_found_handler(),
-                        };
-                        Ok::<_, hyper::Error>(response)
-                    }))
-                });
-                let server = Server::bind(&address).serve(make_service);
-                if let Err(error) = tokio::try_join!(server, rx.map(|_| Ok(()))) {
-                    error!("prometheus service failed: {}", error);
+            let shutdown = Arc::clone(&shutdown);
+            let listener = TcpListener::bind(&address).await?;
+            tokio::spawn(async move {
+                loop {
+                    let stream = tokio::select! {
+                        () = shutdown.notified() => break,
+                        maybe_conn = listener.accept() => match maybe_conn {
+                            Ok((stream, _addr)) => stream,
+                            Err(error) => {
+                                error!("failed to accept new connection: {error}");
+                                break;
+                            }
+                        }
+                    };
+
+                    tokio::spawn(async move {
+                        if let Err(error) = ServerBuilder::new(TokioExecutor::new())
+                            .serve_connection(
+                                TokioIo::new(stream),
+                                service_fn(move |req: Request<BodyIncoming>| async move {
+                                    match req.uri().path() {
+                                        "/metrics" => metrics_handler(),
+                                        _ => not_found_handler(),
+                                    }
+                                }),
+                            )
+                            .await
+                        {
+                            error!("failed to handle metrics request: {error}");
+                        }
+                    });
                 }
             });
         }
 
-        PrometheusService {
-            shutdown_signal: tx,
-        }
+        Ok(PrometheusService { shutdown })
     }
 
     pub fn shutdown(self) {
-        let _ = self.shutdown_signal.send(());
+        self.shutdown.notify_one();
     }
 }
 
-fn metrics_handler() -> Response<Body> {
+fn metrics_handler() -> http::Result<Response<BoxBody<Bytes, Infallible>>> {
     let metrics = TextEncoder::new()
         .encode_to_string(&REGISTRY.gather())
         .unwrap_or_else(|error| {
             error!("could not encode custom metrics: {}", error);
             String::new()
         });
-    Response::builder().body(Body::from(metrics)).unwrap()
+    Response::builder()
+        .status(StatusCode::OK)
+        .body(BodyFull::new(Bytes::from(metrics)).boxed())
 }
 
-fn not_found_handler() -> Response<Body> {
+fn not_found_handler() -> http::Result<Response<BoxBody<Bytes, Infallible>>> {
     Response::builder()
         .status(StatusCode::NOT_FOUND)
-        .body(Body::empty())
-        .unwrap()
+        .body(BodyEmpty::new().boxed())
 }

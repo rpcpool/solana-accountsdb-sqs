@@ -3,11 +3,15 @@ use {
         aws::{AwsError, S3Client, SqsClient},
         config::{AccountsDataCompression, Config},
         filters::{Filters, FiltersError},
-        prom::{
+        metrics::{
             health::{set_health, HealthInfoType},
             UploadMessagesStatus, SLOTS_LAST_PROCESSED, UPLOAD_MESSAGES_TOTAL, UPLOAD_MISSIED_INFO,
             UPLOAD_QUEUE_SIZE,
         },
+    },
+    agave_geyser_plugin_interface::geyser_plugin_interface::{
+        ReplicaAccountInfoVersions, ReplicaBlockInfoVersions, ReplicaTransactionInfoVersions,
+        SlotStatus as GeyserSlotStatus,
     },
     arrayref::array_ref,
     base64::{engine::general_purpose, Engine as _},
@@ -20,10 +24,6 @@ use {
     rusoto_sqs::SendMessageBatchRequestEntry,
     serde::{Deserialize, Serialize},
     serde_json::{json, Value},
-    solana_geyser_plugin_interface::geyser_plugin_interface::{
-        ReplicaAccountInfoVersions, ReplicaBlockInfoVersions, ReplicaTransactionInfoVersions,
-        SlotStatus as GeyserSlotStatus,
-    },
     solana_sdk::{
         clock::UnixTimestamp,
         program_pack::Pack,
@@ -204,7 +204,10 @@ impl From<ReplicaBlockInfoVersions<'_>> for ReplicaBlockMetadata {
             ReplicaBlockInfoVersions::V0_0_2(_info) => {
                 unreachable!("ReplicaBlockInfoVersions::V0_0_2 is not supported")
             }
-            ReplicaBlockInfoVersions::V0_0_3(info) => Self {
+            ReplicaBlockInfoVersions::V0_0_3(_info) => {
+                unreachable!("ReplicaBlockInfoVersions::V0_0_3 is not supported")
+            }
+            ReplicaBlockInfoVersions::V0_0_4(info) => Self {
                 slot: info.slot,
                 block_time: info.block_time,
             },
