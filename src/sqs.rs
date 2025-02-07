@@ -59,6 +59,10 @@ pub enum SlotStatus {
     Confirmed,
     #[derivative(Default)]
     Finalized,
+    FirstShredReceived,
+    Completed,
+    CreatedBank,
+    Dead,
 }
 
 impl SlotStatus {
@@ -67,6 +71,10 @@ impl SlotStatus {
             Self::Processed => "processed",
             Self::Confirmed => "confirmed",
             Self::Finalized => "finalized",
+            Self::FirstShredReceived => "firstShredReceived",
+            Self::Completed => "completed",
+            Self::CreatedBank => "createdBank",
+            Self::Dead => "Dead",
         }
     }
 }
@@ -77,6 +85,10 @@ impl From<GeyserSlotStatus> for SlotStatus {
             GeyserSlotStatus::Processed => Self::Processed,
             GeyserSlotStatus::Confirmed => Self::Confirmed,
             GeyserSlotStatus::Rooted => Self::Finalized,
+            GeyserSlotStatus::FirstShredReceived => Self::FirstShredReceived,
+            GeyserSlotStatus::Completed => Self::Completed,
+            GeyserSlotStatus::CreatedBank => Self::CreatedBank,
+            GeyserSlotStatus::Dead(_s) => Self::Dead,
         }
     }
 }
