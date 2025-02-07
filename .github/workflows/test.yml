@@ -29,7 +29,7 @@ jobs:
       - name: Set rust version
         run: |
           RUST_VERSION="$(grep -oP 'channel = "\K\d\.\d+\.\d+(?=")' rust-toolchain.toml)"
-          echo "RUST_VERSION=$RUST_VERSION" >> "$GITHUB_ENV"
+          echo "RUST_STABLE_VERSION=$RUST_VERSION" >> "$GITHUB_ENV"
 
       - name: Set env vars
         run: |
