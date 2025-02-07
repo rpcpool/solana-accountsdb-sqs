@@ -97,7 +97,7 @@ jobs:
           body: |
             ${{ env.GEYSER_PLUGIN_NAME }} ${{ env.CI_TAG }}
             solana ${{ env.SOLANA_VERSION }}
-            rust ${{ env.RUST_VERSION }}
+            rust ${{ env.RUST_STABLE_VERSION }}
           files: |
             ${{ env.GEYSER_PLUGIN_NAME }}-release*
             target/release/config*

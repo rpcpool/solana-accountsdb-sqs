@@ -61,7 +61,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ env.RUST_VERSION }}
+          toolchain: ${{ env.RUST_STABLE_VERSION }}
           components: clippy
 
       - name: cargo tree
