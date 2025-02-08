@@ -51,13 +51,12 @@ use {
     },
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, derivative::Derivative)]
-#[derivative(Default)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SlotStatus {
     Processed,
     Confirmed,
-    #[derivative(Default)]
+    #[default]
     Finalized,
     FirstShredReceived,
     Completed,
@@ -79,8 +78,8 @@ impl SlotStatus {
     }
 }
 
-impl From<GeyserSlotStatus> for SlotStatus {
-    fn from(status: GeyserSlotStatus) -> Self {
+impl From<&GeyserSlotStatus> for SlotStatus {
+    fn from(status: &GeyserSlotStatus) -> Self {
         match status {
             GeyserSlotStatus::Processed => Self::Processed,
             GeyserSlotStatus::Confirmed => Self::Confirmed,
@@ -506,8 +505,8 @@ impl AwsSqsClient {
         Ok(())
     }
 
-    pub fn update_slot(&self, slot: u64, status: GeyserSlotStatus) -> SqsClientResult {
-        self.send_message(Message::UpdateSlot((status.into(), slot)))
+    pub fn update_slot(&self, slot: u64, status: SlotStatus) -> SqsClientResult {
+        self.send_message(Message::UpdateSlot((status, slot)))
     }
 
     pub fn update_account(

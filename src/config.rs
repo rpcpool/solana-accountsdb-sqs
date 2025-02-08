@@ -229,11 +229,10 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, derivative::Derivative)]
-#[derivative(Default)]
+#[derive(Debug, Default, Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "lowercase", tag = "algo")]
 pub enum AccountsDataCompression {
-    #[derivative(Default)]
+    #[default]
     None,
     Zstd {
         #[serde(default = "AccountsDataCompression::zstd_default_level")]

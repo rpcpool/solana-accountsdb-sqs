@@ -3489,7 +3489,6 @@ dependencies = [
  "cargo-lock",
  "chrono",
  "clap",
- "derivative",
  "enumflags2",
  "flate2",
  "futures",
