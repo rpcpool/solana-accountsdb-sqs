@@ -105,9 +105,9 @@ impl GeyserPlugin for Plugin {
         &self,
         slot: u64,
         _parent: Option<u64>,
-        status: SlotStatus,
+        status: &SlotStatus,
     ) -> PluginResult<()> {
-        self.with_client(|sqs| sqs.update_slot(slot, status))
+        self.with_client(|sqs| sqs.update_slot(slot, status.into()))
     }
 
     fn notify_transaction(

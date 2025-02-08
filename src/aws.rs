@@ -24,6 +24,7 @@ use {
     serde::de::{self, Deserialize, Deserializer},
     std::{
         collections::HashMap,
+        fmt,
         path::{Path, PathBuf},
         sync::Arc,
         time::Duration,
@@ -147,13 +148,20 @@ impl SqsClientQueueUrl {
     }
 }
 
-#[derive(derivative::Derivative)]
-#[derivative(Debug, Clone)]
+#[derive(Clone)]
 pub struct SqsClient {
-    #[derivative(Debug = "ignore")]
     pub client: RusotoSqsClient,
     pub queue_url: SqsClientQueueUrl,
     attributes: SqsMessageAttributes,
+}
+
+impl fmt::Debug for SqsClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SqsClient")
+            .field("queue_url", &self.queue_url)
+            .field("attributes", &self.attributes)
+            .finish()
+    }
 }
 
 impl SqsClient {
@@ -282,14 +290,22 @@ impl SqsClient {
     }
 }
 
-#[derive(derivative::Derivative)]
-#[derivative(Debug, Clone)]
+#[derive(Clone)]
 pub struct S3Client {
-    #[derivative(Debug = "ignore")]
     pub client: RusotoS3Client,
     pub bucket: String,
     pub prefix: PathBuf,
     pub permits: Arc<Semaphore>,
+}
+
+impl fmt::Debug for S3Client {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("S3Client")
+            .field("bucket", &self.bucket)
+            .field("prefix", &self.prefix)
+            .field("permits", &self.permits)
+            .finish()
+    }
 }
 
 impl S3Client {

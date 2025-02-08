@@ -51,14 +51,17 @@ use {
     },
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, derivative::Derivative)]
-#[derivative(Default)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SlotStatus {
     Processed,
     Confirmed,
-    #[derivative(Default)]
+    #[default]
     Finalized,
+    FirstShredReceived,
+    Completed,
+    CreatedBank,
+    Dead,
 }
 
 impl SlotStatus {
@@ -67,16 +70,24 @@ impl SlotStatus {
             Self::Processed => "processed",
             Self::Confirmed => "confirmed",
             Self::Finalized => "finalized",
+            Self::FirstShredReceived => "firstShredReceived",
+            Self::Completed => "completed",
+            Self::CreatedBank => "createdBank",
+            Self::Dead => "Dead",
         }
     }
 }
 
-impl From<GeyserSlotStatus> for SlotStatus {
-    fn from(status: GeyserSlotStatus) -> Self {
+impl From<&GeyserSlotStatus> for SlotStatus {
+    fn from(status: &GeyserSlotStatus) -> Self {
         match status {
             GeyserSlotStatus::Processed => Self::Processed,
             GeyserSlotStatus::Confirmed => Self::Confirmed,
             GeyserSlotStatus::Rooted => Self::Finalized,
+            GeyserSlotStatus::FirstShredReceived => Self::FirstShredReceived,
+            GeyserSlotStatus::Completed => Self::Completed,
+            GeyserSlotStatus::CreatedBank => Self::CreatedBank,
+            GeyserSlotStatus::Dead(_s) => Self::Dead,
         }
     }
 }
@@ -494,8 +505,8 @@ impl AwsSqsClient {
         Ok(())
     }
 
-    pub fn update_slot(&self, slot: u64, status: GeyserSlotStatus) -> SqsClientResult {
-        self.send_message(Message::UpdateSlot((status.into(), slot)))
+    pub fn update_slot(&self, slot: u64, status: SlotStatus) -> SqsClientResult {
+        self.send_message(Message::UpdateSlot((status, slot)))
     }
 
     pub fn update_account(

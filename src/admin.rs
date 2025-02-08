@@ -116,7 +116,7 @@ impl ConfigMgmt {
         let mut pipe = redis::pipe();
         config.save_pubkeys(&mut pipe)?;
         pipe.set(&self.config.config, serde_json::to_string(config)?);
-        Self::with_timeout(pipe.query_async(&mut connection)).await?;
+        Self::with_timeout(pipe.query_async::<_, ()>(&mut connection)).await?;
         Ok(())
     }
 

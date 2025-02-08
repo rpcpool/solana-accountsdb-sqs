@@ -214,6 +214,7 @@ pub enum ArgsActionSendSignal {
 }
 
 #[tokio::main]
+#[allow(dependency_on_unit_never_type_fallback)]
 async fn main() -> Result<()> {
     let args = Args::parse();
 
