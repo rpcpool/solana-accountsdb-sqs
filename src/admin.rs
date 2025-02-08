@@ -116,10 +116,8 @@ impl ConfigMgmt {
         let mut pipe = redis::pipe();
         config.save_pubkeys(&mut pipe)?;
         pipe.set(&self.config.config, serde_json::to_string(config)?);
-        match Self::with_timeout(pipe.query_async::<_, ()>(&mut connection)).await {
-            Ok(_) => Ok(()),
-            Err(e) => Err(e),
-        }
+        Self::with_timeout(pipe.query_async::<_, ()>(&mut connection)).await?;
+        Ok(())
     }
 
     pub async fn send_message(&self, message: &ConfigMgmtMsg) -> AdminResult<usize> {
