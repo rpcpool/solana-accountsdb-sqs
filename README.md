@@ -1,4 +1,5 @@
 # solana-geyser-sqs
+This plugin is no longer maintained.
 
 ### Build
 
